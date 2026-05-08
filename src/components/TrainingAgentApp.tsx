@@ -28,13 +28,10 @@ import {
   coachModules,
   deliveryFlows,
   demoAccounts,
-  generateConsensusReport,
-  generatePersonalPlan,
   initialCoCreation,
   initialItems,
   initialKnowledgeBase,
   likeThreshold,
-  mergeNewIdeas,
   navItems,
   participantCount,
   permissionLabels,
@@ -264,17 +261,39 @@ export function TrainingAgentApp() {
   );
 
   useEffect(() => {
-    fetch(`${appBasePath}/api/state`)
-      .then((response) => response.json())
-      .then((state: SharedState) => {
-        setItems(state.items);
-        setKnowledgeBase(state.knowledgeBase);
-        setCoCreation(state.coCreation);
-      })
-      .catch(() => {
-        setPermissionNotice("共享状态加载失败，当前显示本地演示数据。");
-      });
+    const raw = window.localStorage.getItem("wuhuan-current-account");
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw) as DemoAccount;
+      if (parsed && parsed.id) setCurrentAccount(parsed);
+    } catch {
+      window.localStorage.removeItem("wuhuan-current-account");
+    }
   }, []);
+
+  useEffect(() => {
+    refreshSharedState().catch(() => {
+      setPermissionNotice("共享状态加载失败，当前显示本地演示数据。");
+    });
+  }, []);
+
+  async function refreshSharedState() {
+    const response = await fetch(`${appBasePath}/api/state`);
+    if (!response.ok) throw new Error("load failed");
+    const state: SharedState = await response.json();
+    setItems(state.items);
+    setKnowledgeBase(state.knowledgeBase);
+    setCoCreation(state.coCreation);
+    setPlansByStudent(state.plansByStudent || {});
+    return state;
+  }
+
+  function applySharedState(state: SharedState) {
+    setItems(state.items);
+    setKnowledgeBase(state.knowledgeBase);
+    setCoCreation(state.coCreation);
+    setPlansByStudent(state.plansByStudent || {});
+  }
 
   useEffect(() => {
     const raw = window.localStorage.getItem("wuhuan-model-config");
@@ -286,15 +305,7 @@ export function TrainingAgentApp() {
     }
   }, []);
 
-  useEffect(() => {
-    const raw = window.localStorage.getItem("wuhuan-plans-by-student");
-    if (!raw) return;
-    try {
-      setPlansByStudent(JSON.parse(raw));
-    } catch {
-      window.localStorage.removeItem("wuhuan-plans-by-student");
-    }
-  }, []);
+
 
   useEffect(() => {
     if (!studentOptions.length) return;
@@ -341,9 +352,7 @@ export function TrainingAgentApp() {
       return;
     }
     const result: { state: SharedState; item: LearningItem } = await response.json();
-    setItems(result.state.items);
-    setKnowledgeBase(result.state.knowledgeBase);
-    setCoCreation(result.state.coCreation);
+    applySharedState(result.state);
     setAttachments([]);
     setPermissionNotice(
       result.item.reviewSource === "minimax"
@@ -379,19 +388,18 @@ export function TrainingAgentApp() {
       deny("likeContent");
       return;
     }
+    const voter = currentAccount?.id || currentAccount?.name;
     const response = await fetch(`${appBasePath}/api/items/like`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ itemId })
+      body: JSON.stringify({ itemId, voter })
     });
     if (!response.ok) {
       setPermissionNotice("点赞失败，请稍后重试。");
       return;
     }
     const result: { state: SharedState; item: LearningItem | null } = await response.json();
-    setItems(result.state.items);
-    setKnowledgeBase(result.state.knowledgeBase);
-    setCoCreation(result.state.coCreation);
+    applySharedState(result.state);
   }
 
   function openView(nextView: ViewId) {
@@ -421,6 +429,7 @@ export function TrainingAgentApp() {
       return;
     }
     setCurrentAccount(matched);
+    window.localStorage.setItem("wuhuan-current-account", JSON.stringify(matched));
     setLoginError("");
     setPermissionNotice("");
     setView("dashboard");
@@ -428,71 +437,80 @@ export function TrainingAgentApp() {
 
   function logout() {
     setCurrentAccount(null);
+    window.localStorage.removeItem("wuhuan-current-account");
     setPermissionNotice("");
     setView("dashboard");
   }
 
-  function runCoCreationRound() {
+  async function runCoCreationRound() {
     if (!has("runCoCreation")) {
       deny("runCoCreation");
       return;
     }
-    const incoming = ideaDraft.split("\n");
-    const accepted = mergeNewIdeas(coCreation.ideas, incoming);
-    const ideas = [...coCreation.ideas, ...accepted];
-    const votes = { ...coCreation.votes };
-    for (const idea of accepted) votes[idea] = Math.max(1, participantCount - accepted.indexOf(idea) - 3);
-    const nextState: CoCreationState = {
-      ...coCreation,
-      round: coCreation.round + 1,
-      ideas,
-      categories: categorizeLocalIdeas(ideas),
-      votes,
-      converged: accepted.length <= 3 || coCreation.round + 1 >= coCreation.maxRounds,
-      report: coCreation.report
-    };
-    const report = nextState.converged ? generateConsensusReport(nextState) : nextState.report;
-    setCoCreation({ ...nextState, report });
-    if (report) {
-      setKnowledgeBase((base) =>
-        base.some((entry) => entry.title === "共创共识报告")
-          ? base
-          : [
-              {
-                id: `kb-consensus-${Date.now()}`,
-                phase: "co-creation",
-                type: "共识报告",
-                title: "共创共识报告",
-                summary: report,
-                source: "共创教练 Agent",
-                tags: ["群体共创", "行动转化"],
-                createdAt: new Date().toISOString().slice(0, 10)
-              },
-              ...base
-            ]
-      );
+    const incoming = ideaDraft.split("\n").map((value) => value.trim()).filter(Boolean);
+    const response = await fetch(`${appBasePath}/api/co-creation/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ideas: incoming })
+    });
+    if (!response.ok) {
+      setPermissionNotice("运行共创失败，请稍后重试。");
+      return;
     }
+    const result: { state: SharedState; accepted: string[] } = await response.json();
+    applySharedState(result.state);
+    setPermissionNotice(
+      result.state.coCreation.converged
+        ? "共创已收敛，《共识报告》已生成并入库。"
+        : `本轮新增 ${result.accepted.length} 条观点，继续下一轮可判断智慧饱和。`
+    );
   }
 
-  function submitCoCreationIdeas() {
+  async function submitCoCreationIdeas() {
     if (!has("submitCoCreationIdeas")) {
       deny("submitCoCreationIdeas");
       return;
     }
-    const accepted = mergeNewIdeas(coCreation.ideas, ideaDraft.split("\n"));
-    const ideas = [...coCreation.ideas, ...accepted];
-    const votes = { ...coCreation.votes };
-    for (const idea of accepted) votes[idea] = votes[idea] || 1;
-    setCoCreation({
-      ...coCreation,
-      ideas,
-      categories: categorizeLocalIdeas(ideas),
-      votes
+    const incoming = ideaDraft.split("\n").map((value) => value.trim()).filter(Boolean);
+    if (!incoming.length) {
+      setPermissionNotice("请先填写观点内容，每行一条。");
+      return;
+    }
+    const response = await fetch(`${appBasePath}/api/co-creation/ideas`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ideas: incoming })
     });
-    setPermissionNotice(accepted.length ? `已提交 ${accepted.length} 条新观点，等待班主任运行收敛。` : "没有发现新的有效观点。");
+    if (!response.ok) {
+      setPermissionNotice("提交观点失败，请稍后重试。");
+      return;
+    }
+    const result: { state: SharedState; accepted: string[] } = await response.json();
+    applySharedState(result.state);
+    setPermissionNotice(result.accepted.length ? `已提交 ${result.accepted.length} 条新观点，等待班主任运行收敛。` : "没有发现新的有效观点。");
   }
 
-  function createPlan(studentName?: string) {
+  async function voteForIdea(idea: string) {
+    if (!has("likeContent")) {
+      deny("likeContent");
+      return;
+    }
+    const voter = currentAccount?.id || currentAccount?.name;
+    const response = await fetch(`${appBasePath}/api/co-creation/vote`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idea, voter })
+    });
+    if (!response.ok) {
+      setPermissionNotice("投票失败，请稍后重试。");
+      return;
+    }
+    const result: { state: SharedState; changed: boolean } = await response.json();
+    applySharedState(result.state);
+    if (!result.changed) setPermissionNotice("你已经为该观点投过票了。");
+  }
+
+  async function createPlan(studentName?: string) {
     if (!has("generatePlan")) {
       deny("generatePlan");
       return;
@@ -502,12 +520,17 @@ export function TrainingAgentApp() {
       setPermissionNotice("请先选择要生成行动计划的学员。");
       return;
     }
-    const nextPlan = generatePersonalPlan(knowledgeBase, targetStudent);
-    setPlansByStudent((current) => {
-      const next = { ...current, [targetStudent]: nextPlan };
-      window.localStorage.setItem("wuhuan-plans-by-student", JSON.stringify(next));
-      return next;
+    const response = await fetch(`${appBasePath}/api/plans/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ student: targetStudent })
     });
+    if (!response.ok) {
+      setPermissionNotice("生成方案失败，请稍后重试。");
+      return;
+    }
+    const result: { state: SharedState; plan: PersonalPlan } = await response.json();
+    applySharedState(result.state);
     setSelectedPlanStudent(targetStudent);
     setActivePhase("transformation");
     setDraft(defaultDraftForPhase("transformation"));
@@ -659,8 +682,11 @@ export function TrainingAgentApp() {
               setIdeaDraft={setIdeaDraft}
               onSubmitIdeas={submitCoCreationIdeas}
               onRun={runCoCreationRound}
+              onVote={voteForIdea}
               canSubmitIdeas={has("submitCoCreationIdeas")}
               canRun={has("runCoCreation")}
+              canVote={has("likeContent")}
+              currentVoter={currentAccount?.id || currentAccount?.name || ""}
               role={currentRole}
             />
           )}
@@ -1717,8 +1743,11 @@ function CoCreationPanel({
   setIdeaDraft,
   onSubmitIdeas,
   onRun,
+  onVote,
   canSubmitIdeas,
   canRun,
+  canVote,
+  currentVoter,
   role
 }: {
   coCreation: CoCreationState;
@@ -1726,8 +1755,11 @@ function CoCreationPanel({
   setIdeaDraft: (value: string) => void;
   onSubmitIdeas: () => void;
   onRun: () => void;
+  onVote: (idea: string) => void;
   canSubmitIdeas: boolean;
   canRun: boolean;
+  canVote: boolean;
+  currentVoter: string;
   role: (typeof roleProfiles)[number];
 }) {
   const blueprint = submissionBlueprints["co-creation"];
@@ -1827,12 +1859,29 @@ function CoCreationPanel({
           <div className="space-y-2">
             {Object.entries(coCreation.votes)
               .sort((a, b) => b[1] - a[1])
-              .map(([idea, votes]) => (
-                <div key={idea} className="grid grid-cols-[1fr_72px] items-center gap-3 rounded-lg border border-[var(--line)] px-3 py-2 text-sm">
-                  <span>{idea}</span>
-                  <span className="text-right font-bold text-[#92620f]">{votes} 票</span>
-                </div>
-              ))}
+              .map(([idea, votes]) => {
+                const hasVoted = Boolean(
+                  currentVoter && (coCreation.voters?.[idea] || []).includes(currentVoter)
+                );
+                const disabled = !canVote || hasVoted;
+                return (
+                  <div key={idea} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-lg border border-[var(--line)] px-3 py-2 text-sm">
+                    <span className="leading-6">{idea}</span>
+                    <span className="font-bold text-[#92620f]">{votes} 票</span>
+                    <button
+                      onClick={() => onVote(idea)}
+                      disabled={disabled}
+                      className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+                        disabled
+                          ? "bg-slate-100 text-slate-400"
+                          : "border border-[#eed38e] bg-[#fff8e8] text-[#92620f] hover:bg-[#fff3d6]"
+                      }`}
+                    >
+                      {hasVoted ? "已投" : canVote ? "投一票" : "不可投"}
+                    </button>
+                  </div>
+                );
+              })}
           </div>
         </div>
 
@@ -2096,6 +2145,17 @@ function TransformationPanel({
 }
 
 function KnowledgePanel({ knowledgeBase, role }: { knowledgeBase: KnowledgeEntry[]; role: (typeof roleProfiles)[number] }) {
+  const [filter, setFilter] = useState<PhaseId | "all">("all");
+  const filtered = filter === "all" ? knowledgeBase : knowledgeBase.filter((entry) => entry.phase === filter);
+  const tabs: Array<{ id: PhaseId | "all"; label: string; count: number }> = [
+    { id: "all", label: "总知识库", count: knowledgeBase.length },
+    ...coachModules.map((module) => ({
+      id: module.id,
+      label: `${module.title}知识库`,
+      count: knowledgeBase.filter((entry) => entry.phase === module.id).length
+    }))
+  ];
+
   return (
     <section className="rounded-lg border border-[var(--line)] bg-white">
       <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
@@ -2107,11 +2167,27 @@ function KnowledgePanel({ knowledgeBase, role }: { knowledgeBase: KnowledgeEntry
         </div>
         <Database className="text-[var(--teal)]" size={22} />
       </div>
+      <div className="flex flex-wrap gap-2 border-b border-[var(--line)] px-5 py-3">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setFilter(tab.id)}
+            className={`rounded-md px-3 py-1.5 text-xs font-semibold ${
+              filter === tab.id
+                ? "bg-[var(--teal)] text-white"
+                : "border border-[var(--line)] bg-[var(--surface-strong)] text-slate-600 hover:border-[var(--teal)]"
+            }`}
+          >
+            {tab.label} · {tab.count}
+          </button>
+        ))}
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] border-collapse text-left text-sm">
           <thead className="bg-[var(--surface-strong)] text-xs uppercase text-slate-500">
             <tr>
               <th className="px-5 py-3">条目</th>
+              <th className="px-5 py-3">环节</th>
               <th className="px-5 py-3">类型</th>
               <th className="px-5 py-3">来源</th>
               <th className="px-5 py-3">标签</th>
@@ -2119,26 +2195,35 @@ function KnowledgePanel({ knowledgeBase, role }: { knowledgeBase: KnowledgeEntry
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--line)]">
-            {knowledgeBase.map((entry) => (
-              <tr key={entry.id}>
-                <td className="px-5 py-4">
-                  <p className="font-semibold">{entry.title}</p>
-                  <p className="mt-1 max-w-lg text-[var(--muted)]">{entry.summary}</p>
-                </td>
-                <td className="px-5 py-4">{entry.type}</td>
-                <td className="px-5 py-4">{entry.source}</td>
-                <td className="px-5 py-4">
-                  <div className="flex flex-wrap gap-1">
-                    {entry.tags.map((tag) => (
-                      <span key={tag} className="rounded-md bg-[var(--surface-strong)] px-2 py-1 text-xs">
-                        {tag}
-                      </span>
-                    ))}
-                  </div>
-                </td>
-                <td className="px-5 py-4">{entry.createdAt}</td>
+            {filtered.map((entry) => {
+              const phaseName = coachModules.find((module) => module.id === entry.phase)?.title || entry.phase;
+              return (
+                <tr key={entry.id}>
+                  <td className="px-5 py-4">
+                    <p className="font-semibold">{entry.title}</p>
+                    <p className="mt-1 max-w-lg text-[var(--muted)]">{entry.summary}</p>
+                  </td>
+                  <td className="px-5 py-4">{phaseName}</td>
+                  <td className="px-5 py-4">{entry.type}</td>
+                  <td className="px-5 py-4">{entry.source}</td>
+                  <td className="px-5 py-4">
+                    <div className="flex flex-wrap gap-1">
+                      {entry.tags.map((tag) => (
+                        <span key={tag} className="rounded-md bg-[var(--surface-strong)] px-2 py-1 text-xs">
+                          {tag}
+                        </span>
+                      ))}
+                    </div>
+                  </td>
+                  <td className="px-5 py-4">{entry.createdAt}</td>
+                </tr>
+              );
+            })}
+            {!filtered.length && (
+              <tr>
+                <td colSpan={6} className="px-5 py-10 text-center text-sm text-[var(--muted)]">该分库暂无条目，请先完成相应环节的提交与点赞达标。</td>
               </tr>
-            ))}
+            )}
           </tbody>
         </table>
       </div>
@@ -2352,12 +2437,18 @@ function PlanCard({ plan }: { plan: PersonalPlan }) {
           <p className="font-semibold">追踪节点</p>
           <div className="mt-3 space-y-2">
             {plan.checkpoints.map((checkpoint) => (
-              <div key={checkpoint.day} className="flex items-center justify-between rounded-lg bg-[var(--surface-strong)] px-3 py-2 text-sm">
-                <span>{checkpoint.day} · {checkpoint.label}</span>
-                <span className="font-semibold text-[#a43f5a]">{checkpoint.status}</span>
+              <div key={checkpoint.day} className="rounded-lg bg-[var(--surface-strong)] px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span>{checkpoint.day} · {checkpoint.label}</span>
+                  <span className="font-semibold text-[#a43f5a]">{checkpoint.status}</span>
+                </div>
+                {checkpoint.date && (
+                  <p className="mt-1 text-xs text-[var(--muted)]">预计节点：{checkpoint.date}{checkpoint.evidenceItemId ? " · 成果已提交" : ""}</p>
+                )}
               </div>
             ))}
           </div>
+          {plan.generatedAt && <p className="mt-2 text-xs text-[var(--muted)]">方案生成时间：{plan.generatedAt}</p>}
           <p className="mt-4 text-sm font-semibold">引用案例</p>
           <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{plan.citedCases.join("、") || "等待更多知识库素材"}</p>
         </div>
@@ -2422,22 +2513,4 @@ function Metric({ label, value }: { label: string; value: string }) {
       <p className="mt-1 text-xl font-bold">{value}</p>
     </div>
   );
-}
-
-function categorizeLocalIdeas(ideas: string[]) {
-  const categories: Record<string, string[]> = {
-    学员支持: [],
-    教学方法: [],
-    实训设计: [],
-    评价反馈: [],
-    转化落地: []
-  };
-  for (const idea of ideas) {
-    if (/提醒|辅导|答疑|支持|陪跑/.test(idea)) categories["学员支持"].push(idea);
-    else if (/实训|练习|任务|操作|模板/.test(idea)) categories["实训设计"].push(idea);
-    else if (/评价|反馈|互评|评分|复盘/.test(idea)) categories["评价反馈"].push(idea);
-    else if (/转化|行动|成果|应用|案例/.test(idea)) categories["转化落地"].push(idea);
-    else categories["教学方法"].push(idea);
-  }
-  return Object.fromEntries(Object.entries(categories).filter(([, list]) => list.length > 0));
 }

@@ -102,6 +102,7 @@ export type LearningItem = {
   aiSummary?: string;
   reviewSource?: "local" | "minimax" | "custom";
   inKnowledgeBase: boolean;
+  voters?: string[];
 };
 
 type ReviewSnapshot = Pick<LearningItem, "quality" | "tags">;
@@ -135,6 +136,7 @@ export type CoCreationState = {
   ideas: string[];
   categories: Record<string, string[]>;
   votes: Record<string, number>;
+  voters?: Record<string, string[]>;
   converged: boolean;
   report: string;
 };
@@ -146,8 +148,11 @@ export type PersonalPlan = {
   checkpoints: Array<{
     label: string;
     day: string;
+    date?: string;
     status: "待提醒" | "待提交" | "已评估";
+    evidenceItemId?: string;
   }>;
+  generatedAt?: string;
   citedCases: string[];
 };
 
@@ -487,7 +492,7 @@ export function createLearningItem(input: {
 }): LearningItem {
   const reviewed = reviewLearningItem(input);
   return {
-    id: `item-${Date.now()}`,
+    id: `item-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     phase: input.phase,
     type: input.type,
     title: input.title,
@@ -577,6 +582,11 @@ export function generatePersonalPlan(knowledgeBase: KnowledgeEntry[], student = 
     .slice(-3)
     .map((entry) => entry.title);
 
+  const now = new Date();
+  const generatedAt = now.toISOString().slice(0, 10);
+  const d30 = addDays(now, 30).toISOString().slice(0, 10);
+  const d90 = addDays(now, 90).toISOString().slice(0, 10);
+
   return {
     student,
     recommendation: `建议 ${student} 围绕“提升课堂提问质量和学生参与度”形成小步行动方案，先选定一节真实课作为转化场景，再复用深学、跟练、反思和共创知识库中的方法素材。`,
@@ -584,14 +594,21 @@ export function generatePersonalPlan(knowledgeBase: KnowledgeEntry[], student = 
       "选择一节 2 周内可实施的真实课作为转化场景。",
       "引用 1 条优秀批注、1 条即时贴和 1 个反思案例完善课堂设计。",
       "在课堂中收集学生发言记录、观察量表和改进证据。",
-      "D+30 提交初步成果，D+90 形成完整转化案例。"
+      `${d30} 提交初步成果，${d90} 形成完整转化案例。`
     ],
     checkpoints: [
-      { label: "训后 1 个月提醒", day: "D+30", status: "待提交" },
-      { label: "训后 3 个月追踪", day: "D+90", status: "待提醒" }
+      { label: "训后 1 个月提醒", day: "D+30", date: d30, status: "待提交" },
+      { label: "训后 3 个月追踪", day: "D+90", date: d90, status: "待提醒" }
     ],
-    citedCases
+    citedCases,
+    generatedAt
   };
+}
+
+function addDays(base: Date, days: number) {
+  const copy = new Date(base);
+  copy.setDate(copy.getDate() + days);
+  return copy;
 }
 
 export const initialItems: LearningItem[] = [
@@ -663,6 +680,7 @@ export const initialCoCreation: CoCreationState = {
     "增加同伴互评反馈": 4,
     "将优秀转化案例纳入下期素材": 7
   },
+  voters: {},
   converged: false,
   report: ""
 };

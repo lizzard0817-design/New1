@@ -1,8 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { withAuth } from "@/lib/api/with-auth";
-import { listTopics, createTopic } from "@/lib/services/co-creation";
+import { listTopics, createTopic, getTopicDetail } from "@/lib/services/co-creation";
 
-export const GET = withAuth(async () => {
+export const GET = withAuth(async (request: NextRequest) => {
+  const topicId = request.nextUrl.searchParams.get("id");
+  if (topicId) {
+    const detail = getTopicDetail(topicId);
+    if (!detail) {
+      return NextResponse.json({ error: "主题不存在", code: "VALIDATION_ERROR" }, { status: 404 });
+    }
+    return NextResponse.json(detail);
+  }
   const topics = listTopics();
   return NextResponse.json(topics);
 });

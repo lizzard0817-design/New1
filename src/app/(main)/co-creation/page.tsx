@@ -39,25 +39,13 @@ export default function CoCreationPage() {
   }, []);
 
   async function loadTopicDetail(topicId: string) {
-    const res = await fetch(`/api/co-creation/topics`);
-    const allTopics = await res.json();
-    const active = allTopics.find((t: { id: string }) => t.id === topicId);
-    if (active) {
-      const detailRes = await fetch(`/api/state`);
-      const detail = await detailRes.json();
-      setActiveTopic({
-        id: active.id,
-        title: active.title,
-        round: active.round,
-        maxRounds: active.maxRounds,
-        converged: active.converged,
-        report: active.report,
-        isActive: active.isActive,
-        ideas: [],
-        categories: {},
-        votes: {},
-      });
-    }
+    try {
+      const res = await fetch(`/api/co-creation/topics?id=${encodeURIComponent(topicId)}`);
+      if (res.ok) {
+        const detail = await res.json();
+        setActiveTopic(detail);
+      }
+    } catch {}
   }
 
   async function handleSubmitIdeas() {

@@ -1,10 +1,13 @@
-import { NextResponse } from "next/server";
-import { likeSharedItem } from "@/lib/server-state";
+import { NextRequest, NextResponse } from "next/server";
+import { withAuth } from "@/lib/api/with-auth";
+import { likeItem } from "@/lib/services/items";
 
-export async function POST(request: Request) {
+export const POST = withAuth(async (request, _ctx, user) => {
   const body = await request.json();
   const itemId = String(body.itemId || "");
-  const voter = typeof body.voter === "string" ? body.voter : undefined;
-  const result = await likeSharedItem(itemId, voter);
+  if (!itemId) {
+    return NextResponse.json({ error: "缺少内容 ID", code: "VALIDATION_ERROR" }, { status: 400 });
+  }
+  const result = likeItem(itemId, user.sub);
   return NextResponse.json(result);
-}
+});

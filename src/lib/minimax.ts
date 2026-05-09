@@ -17,29 +17,44 @@ export async function reviewWithMiniMax(input: {
   const apiKey = runtime.apiKey;
   if (!apiKey) return null;
 
-  const response = await fetch(`${runtime.baseUrl.replace(/\/$/, "")}/chat/completions`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: runtime.model,
-      messages: [
-        {
-          role: "system",
-          content:
-            "你是五环共创培训系统的内容审核智能体。只输出 JSON，不要输出解释。字段：quality 为 待补充/合规/优秀；tags 为 2-4 个中文标签；aiSummary 为 50 字以内摘要。"
-        },
-        {
-          role: "user",
-          content: `环节：${input.phase}\n标题：${input.title}\n内容：${input.body}`
-        }
-      ],
-      temperature: 0.2,
-      max_tokens: 220
-    })
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 30000);
+
+  let response: Response;
+  try {
+    response = await fetch(`${runtime.baseUrl.replace(/\/$/, "")}/chat/completions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        model: runtime.model,
+        messages: [
+          {
+            role: "system",
+            content:
+              "你是五环共创培训系统的内容审核智能体。只输出 JSON，不要输出解释。字段：quality 为 待补充/合规/优秀；tags 为 2-4 个中文标签；aiSummary 为 50 字以内摘要。"
+          },
+          {
+            role: "user",
+            content: `环节：${input.phase}\n标题：${input.title}\n内容：${input.body}`
+          }
+        ],
+        temperature: 0.2,
+        max_tokens: 220
+      }),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeout);
+    if (err instanceof DOMException && err.name === "AbortError") {
+      throw new Error(`${runtime.providerName} 请求超时（30秒）`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok) {
     throw new Error(`${runtime.providerName} request failed: ${response.status}`);

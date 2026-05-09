@@ -1,5 +1,11 @@
-import { TrainingAgentApp } from "@/components/TrainingAgentApp";
+import { redirect } from "next/navigation";
+import { getCurrentUser } from "@/lib/auth/session";
 
-export default function Home() {
-  return <TrainingAgentApp />;
+export default async function HomePage() {
+  const user = await getCurrentUser();
+  if (user) {
+    redirect("/dashboard");
+  } else {
+    redirect("/login");
+  }
 }

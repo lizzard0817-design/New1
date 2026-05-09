@@ -6,6 +6,8 @@ services:
     environment:
       NODE_ENV: production
       WUHUA_DATA_DIR: /data
+      JWT_SECRET: ${JWT_SECRET:-wuhuan-jwt-secret-change-in-production}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-wuhuan-encryption-key-change-in-production}
     volumes:
       - wuhuan_data:/data
     restart: unless-stopped

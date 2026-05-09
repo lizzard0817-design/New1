@@ -1,6 +1,7 @@
 FROM node:22-alpine AS deps
 WORKDIR /app
-COPY package.json ./
+RUN apk add --no-cache python3 make g++
+COPY package.json package-lock.json ./
 RUN npm install
 
 FROM node:22-alpine AS builder
@@ -17,6 +18,8 @@ ENV NEXT_TELEMETRY_DISABLED=1
 ENV PORT=3000
 ENV HOSTNAME=0.0.0.0
 ENV WUHUA_DATA_DIR=/data
+ENV JWT_SECRET=change-me-in-production
+ENV ENCRYPTION_KEY=change-me-in-production
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs

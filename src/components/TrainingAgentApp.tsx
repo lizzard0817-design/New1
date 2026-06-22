@@ -3,23 +3,34 @@
 import type { ReactNode } from "react";
 import { useEffect, useMemo, useState } from "react";
 import {
+  AlertTriangle,
   ArrowRight,
+  BarChart3,
+  Bell,
   Check,
+  CheckCircle2,
   ChevronRight,
+  Clock3,
   Database,
+  EyeOff,
   FileText,
+  FlaskConical,
+  Gauge,
   ImagePlus,
   Layers3,
   Lock,
   LogIn,
   LogOut,
+  MessageSquareWarning,
   Plus,
   Send,
   ShieldCheck,
   Sparkles,
   ThumbsUp,
   TimerReset,
+  TrendingUp,
   UserRound,
+  Users,
   Vote,
   X
 } from "lucide-react";
@@ -213,6 +224,23 @@ const defaultModelConfig: ModelConfig = {
 const appBasePath = process.env.NEXT_PUBLIC_BASE_PATH || "";
 type PlansByStudent = Record<string, PersonalPlan>;
 
+async function readApiError(response: Response, fallback: string) {
+  try {
+    const data = await response.json();
+    if (typeof data?.error?.message === "string") return data.error.message;
+    if (typeof data?.error === "string") return data.error;
+  } catch {
+    // Keep the original fallback when the response is not JSON.
+  }
+  return fallback;
+}
+
+function getDueCheckpoints(plan: PersonalPlan | null) {
+  if (!plan) return [];
+  const today = new Date().toISOString().slice(0, 10);
+  return plan.checkpoints.filter((checkpoint) => checkpoint.status !== "已评估" && (!checkpoint.date || checkpoint.date <= today));
+}
+
 export function TrainingAgentApp() {
   const [view, setView] = useState<ViewId>("dashboard");
   const [currentAccount, setCurrentAccount] = useState<DemoAccount | null>(null);
@@ -224,11 +252,13 @@ export function TrainingAgentApp() {
   const [knowledgeBase, setKnowledgeBase] = useState<KnowledgeEntry[]>(initialKnowledgeBase);
   const [coCreation, setCoCreation] = useState<CoCreationState>(initialCoCreation);
   const [plansByStudent, setPlansByStudent] = useState<PlansByStudent>({});
+  const [accounts, setAccounts] = useState<DemoAccount[]>(demoAccounts);
   const [selectedPlanStudent, setSelectedPlanStudent] = useState("李同学");
   const [activePhase, setActivePhase] = useState<PhaseId>("deep-study");
   const [draft, setDraft] = useState(defaultDraftForPhase("deep-study"));
   const [attachments, setAttachments] = useState<UploadedAsset[]>([]);
   const [ideaDraft, setIdeaDraft] = useState(submissionBlueprints["co-creation"].defaultBody);
+  const [selectedCoCreationGroup, setSelectedCoCreationGroup] = useState("第一小组");
 
   const role = currentAccount?.role || "student";
   const currentModule = coachModules.find((item) => item.id === activePhase) || coachModules[0];
@@ -239,14 +269,14 @@ export function TrainingAgentApp() {
   const visibleNavItems = navItems.filter((item) => has(viewPermission(item.id)));
   const studentOptions = useMemo(() => {
     const names = new Set<string>();
-    for (const account of demoAccounts) {
-      if (account.role === "student") names.add(account.name);
+    for (const account of accounts) {
+      if (account.role === "student" && account.active !== false) names.add(account.name);
     }
     for (const item of items) {
       if (item.author) names.add(item.author);
     }
     return Array.from(names).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
-  }, [items]);
+  }, [accounts, items]);
   const planStudent = role === "student" ? currentAccount?.name || selectedPlanStudent : selectedPlanStudent;
   const plan = planStudent ? plansByStudent[planStudent] || null : null;
 
@@ -265,26 +295,34 @@ export function TrainingAgentApp() {
     if (!raw) return;
     try {
       const parsed = JSON.parse(raw) as DemoAccount;
-      if (parsed && parsed.id) setCurrentAccount(parsed);
+      if (parsed && parsed.id) {
+        const known = demoAccounts.find((account) => account.id === parsed.id);
+        setCurrentAccount({ ...(known || parsed), ...parsed, groupName: parsed.groupName || known?.groupName || "全班" });
+      }
     } catch {
       window.localStorage.removeItem("wuhuan-current-account");
     }
   }, []);
 
   useEffect(() => {
+    if (!currentAccount) return;
+    setSelectedCoCreationGroup(currentAccount.groupName || "全班");
     refreshSharedState().catch(() => {
       setPermissionNotice("共享状态加载失败，当前显示本地演示数据。");
     });
-  }, []);
+  }, [currentAccount?.id]);
 
   async function refreshSharedState() {
-    const response = await fetch(`${appBasePath}/api/state`);
+    const response = await fetch(`${appBasePath}/api/state`, {
+      headers: apiHeaders(false)
+    });
     if (!response.ok) throw new Error("load failed");
     const state: SharedState = await response.json();
     setItems(state.items);
     setKnowledgeBase(state.knowledgeBase);
     setCoCreation(state.coCreation);
     setPlansByStudent(state.plansByStudent || {});
+    if (state.accounts?.length) setAccounts(state.accounts);
     return state;
   }
 
@@ -293,6 +331,7 @@ export function TrainingAgentApp() {
     setKnowledgeBase(state.knowledgeBase);
     setCoCreation(state.coCreation);
     setPlansByStudent(state.plansByStudent || {});
+    if (state.accounts?.length) setAccounts(state.accounts);
   }
 
   useEffect(() => {
@@ -328,39 +367,55 @@ export function TrainingAgentApp() {
     setPermissionNotice(`${currentRole.name}暂无“${permissionLabels[permission]}”权限。`);
   }
 
+  function apiHeaders(includeContentType = true) {
+    const headers: Record<string, string> = {};
+    if (includeContentType) headers["Content-Type"] = "application/json";
+    if (currentAccount) {
+      headers["x-wuhuan-user-id"] = currentAccount.id;
+      headers["x-wuhuan-user-name"] = encodeURIComponent(currentAccount.name);
+      headers["x-wuhuan-role"] = currentAccount.role;
+      headers["x-wuhuan-group"] = encodeURIComponent(currentAccount.groupName || "全班");
+    }
+    return headers;
+  }
+
   async function addItem(phaseOverride?: PhaseId) {
     if (!has("submitLearningContent")) {
       deny("submitLearningContent");
       return;
     }
     const phase = phaseOverride || activePhase;
-    const response = await fetch(`${appBasePath}/api/items`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        phase,
-        type: typeByPhase[phase],
-        title: draft.title,
-        body: draft.body,
-        author: currentAccount?.name || "李同学",
-        attachments,
-        modelConfig
-      })
-    });
-    if (!response.ok) {
-      setPermissionNotice("提交失败，请稍后重试。");
+    try {
+      const response = await fetch(`${appBasePath}/api/items`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({
+          phase,
+          type: typeByPhase[phase],
+          title: draft.title,
+          body: draft.body,
+          attachments,
+          modelConfig
+        })
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "提交失败，请稍后重试。"));
+        return;
+      }
+      const result: { state: SharedState; item: LearningItem } = await response.json();
+      applySharedState(result.state);
+      setAttachments([]);
+      setPermissionNotice(
+        result.item.reviewSource === "minimax"
+          ? `已提交，MiniMax 已完成审核：${result.item.aiSummary || result.item.quality}`
+          : result.item.reviewSource === "custom"
+            ? `已提交，${modelConfig.providerName || "自定义模型"} 已完成审核：${result.item.aiSummary || result.item.quality}`
+            : `已提交，当前使用本地规则完成审核：${result.item.aiSummary || result.item.quality}`
+      );
+    } catch {
+      setPermissionNotice("网络异常，提交未完成。草稿和附件已保留。");
       return;
     }
-    const result: { state: SharedState; item: LearningItem } = await response.json();
-    applySharedState(result.state);
-    setAttachments([]);
-    setPermissionNotice(
-      result.item.reviewSource === "minimax"
-        ? `已提交，MiniMax 已完成审核：${result.item.aiSummary || result.item.quality}`
-        : result.item.reviewSource === "custom"
-          ? `已提交，${modelConfig.providerName || "自定义模型"} 已完成审核：${result.item.aiSummary || result.item.quality}`
-          : "已提交，当前使用本地规则完成审核。"
-    );
   }
 
   async function uploadImage(file: File) {
@@ -370,17 +425,23 @@ export function TrainingAgentApp() {
     }
     const formData = new FormData();
     formData.append("file", file);
-    const response = await fetch(`${appBasePath}/api/uploads`, {
-      method: "POST",
-      body: formData
-    });
-    const result = await response.json();
-    if (!response.ok) {
-      setPermissionNotice(result.error || "图片上传失败。");
+    try {
+      const response = await fetch(`${appBasePath}/api/uploads`, {
+        method: "POST",
+        headers: apiHeaders(false),
+        body: formData
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "图片上传失败。"));
+        return;
+      }
+      const result = await response.json();
+      setAttachments((current) => [...current, result.asset as UploadedAsset]);
+      setPermissionNotice("图片已上传，将随本次提交一起进入内容池。");
+    } catch {
+      setPermissionNotice("图片上传网络异常，请稍后重试。");
       return;
     }
-    setAttachments((current) => [...current, result.asset as UploadedAsset]);
-    setPermissionNotice("图片已上传，将随本次提交一起进入内容池。");
   }
 
   async function likeItem(itemId: string) {
@@ -388,18 +449,22 @@ export function TrainingAgentApp() {
       deny("likeContent");
       return;
     }
-    const voter = currentAccount?.id || currentAccount?.name;
-    const response = await fetch(`${appBasePath}/api/items/like`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ itemId, voter })
-    });
-    if (!response.ok) {
-      setPermissionNotice("点赞失败，请稍后重试。");
+    try {
+      const response = await fetch(`${appBasePath}/api/items/like`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ itemId })
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "点赞失败，请稍后重试。"));
+        return;
+      }
+      const result: { state: SharedState; item: LearningItem | null } = await response.json();
+      applySharedState(result.state);
+    } catch {
+      setPermissionNotice("点赞网络异常，请稍后重试。");
       return;
     }
-    const result: { state: SharedState; item: LearningItem | null } = await response.json();
-    applySharedState(result.state);
   }
 
   function openView(nextView: ViewId) {
@@ -423,9 +488,14 @@ export function TrainingAgentApp() {
   }
 
   function login(account?: DemoAccount) {
-    const matched = account || demoAccounts.find((item) => item.username === loginForm.username.trim() && item.password === loginForm.password);
+    const sourceAccounts = accounts.length ? accounts : demoAccounts;
+    const matched = account || sourceAccounts.find((item) => item.username === loginForm.username.trim() && item.password === loginForm.password);
     if (!matched) {
       setLoginError("账号或密码不正确。可使用下方演示账号快速登录。");
+      return;
+    }
+    if (matched.active === false) {
+      setLoginError("该账号已被管理员停用。");
       return;
     }
     setCurrentAccount(matched);
@@ -448,22 +518,25 @@ export function TrainingAgentApp() {
       return;
     }
     const incoming = ideaDraft.split("\n").map((value) => value.trim()).filter(Boolean);
-    const response = await fetch(`${appBasePath}/api/co-creation/run`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ideas: incoming })
-    });
-    if (!response.ok) {
-      setPermissionNotice("运行共创失败，请稍后重试。");
+    try {
+      const response = await fetch(`${appBasePath}/api/co-creation/run`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ ideas: incoming, group: selectedCoCreationGroup })
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "运行共创失败，请稍后重试。"));
+        return;
+      }
+      const result: { state: SharedState; accepted: string[]; hidden?: string[] } = await response.json();
+      applySharedState(result.state);
+      setPermissionNotice(
+        `当前主题已收敛归档，保留 ${result.accepted.length} 条新增有效观点${result.hidden?.length ? `，隐藏 ${result.hidden.length} 条无效/重复观点` : ""}。请更新新的共创主题。`
+      );
+    } catch {
+      setPermissionNotice("运行共创时网络异常，请稍后重试。");
       return;
     }
-    const result: { state: SharedState; accepted: string[] } = await response.json();
-    applySharedState(result.state);
-    setPermissionNotice(
-      result.state.coCreation.converged
-        ? "共创已收敛，《共识报告》已生成并入库。"
-        : `本轮新增 ${result.accepted.length} 条观点，继续下一轮可判断智慧饱和。`
-    );
   }
 
   async function submitCoCreationIdeas() {
@@ -476,18 +549,27 @@ export function TrainingAgentApp() {
       setPermissionNotice("请先填写观点内容，每行一条。");
       return;
     }
-    const response = await fetch(`${appBasePath}/api/co-creation/ideas`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ideas: incoming })
-    });
-    if (!response.ok) {
-      setPermissionNotice("提交观点失败，请稍后重试。");
+    try {
+      const response = await fetch(`${appBasePath}/api/co-creation/ideas`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ ideas: incoming, group: selectedCoCreationGroup })
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "提交观点失败，请稍后重试。"));
+        return;
+      }
+      const result: { state: SharedState; accepted: string[]; hidden?: string[] } = await response.json();
+      applySharedState(result.state);
+      setPermissionNotice(
+        result.accepted.length
+          ? `已提交 ${result.accepted.length} 条有效观点${result.hidden?.length ? `，隐藏 ${result.hidden.length} 条无效/重复观点` : ""}，等待班主任收敛当前主题。`
+          : "没有发现新的有效观点，已隐藏无效或重复内容。"
+      );
+    } catch {
+      setPermissionNotice("提交观点网络异常，请稍后重试。");
       return;
     }
-    const result: { state: SharedState; accepted: string[] } = await response.json();
-    applySharedState(result.state);
-    setPermissionNotice(result.accepted.length ? `已提交 ${result.accepted.length} 条新观点，等待班主任运行收敛。` : "没有发现新的有效观点。");
   }
 
   async function voteForIdea(idea: string) {
@@ -495,19 +577,31 @@ export function TrainingAgentApp() {
       deny("likeContent");
       return;
     }
-    const voter = currentAccount?.id || currentAccount?.name;
-    const response = await fetch(`${appBasePath}/api/co-creation/vote`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idea, voter })
-    });
-    if (!response.ok) {
-      setPermissionNotice("投票失败，请稍后重试。");
+    try {
+      const response = await fetch(`${appBasePath}/api/co-creation/vote`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ idea, group: selectedCoCreationGroup })
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "投票失败，请稍后重试。"));
+        return;
+      }
+      const result: { state: SharedState; changed: boolean; reason?: string } = await response.json();
+      applySharedState(result.state);
+      if (!result.changed) {
+        setPermissionNotice(
+          result.reason === "missing"
+            ? "该观点已不存在，无法投票。"
+            : result.reason === "converged"
+              ? "当前主题已收敛归档，不能继续投票。"
+              : "你已经为该观点投过票了。"
+        );
+      }
+    } catch {
+      setPermissionNotice("投票网络异常，请稍后重试。");
       return;
     }
-    const result: { state: SharedState; changed: boolean } = await response.json();
-    applySharedState(result.state);
-    if (!result.changed) setPermissionNotice("你已经为该观点投过票了。");
   }
 
   async function createPlan(studentName?: string) {
@@ -520,27 +614,159 @@ export function TrainingAgentApp() {
       setPermissionNotice("请先选择要生成行动计划的学员。");
       return;
     }
-    const response = await fetch(`${appBasePath}/api/plans/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ student: targetStudent })
-    });
-    if (!response.ok) {
-      setPermissionNotice("生成方案失败，请稍后重试。");
+    try {
+      const response = await fetch(`${appBasePath}/api/plans/generate`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ student: targetStudent })
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "生成方案失败，请稍后重试。"));
+        return;
+      }
+      const result: { state: SharedState; plan: PersonalPlan } = await response.json();
+      applySharedState(result.state);
+      setSelectedPlanStudent(targetStudent);
+      setActivePhase("transformation");
+      setDraft(defaultDraftForPhase("transformation"));
+      setView("transformation");
+      setPermissionNotice(`已为 ${targetStudent} 生成《个人行动计划》，等待学员确认。`);
+    } catch {
+      setPermissionNotice("生成方案网络异常，请稍后重试。");
       return;
     }
-    const result: { state: SharedState; plan: PersonalPlan } = await response.json();
-    applySharedState(result.state);
-    setSelectedPlanStudent(targetStudent);
-    setActivePhase("transformation");
-    setDraft(defaultDraftForPhase("transformation"));
-    setView("transformation");
-    setPermissionNotice(`已为 ${targetStudent} 生成《个人行动计划》。`);
+  }
+
+  async function confirmPlan(studentName?: string) {
+    const targetStudent = studentName || planStudent;
+    if (!targetStudent) return;
+    try {
+      const response = await fetch(`${appBasePath}/api/plans/confirm`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ student: targetStudent })
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "确认方案失败，请稍后重试。"));
+        return;
+      }
+      const result: { state: SharedState; plan: PersonalPlan } = await response.json();
+      applySharedState(result.state);
+      setPermissionNotice(`${result.plan.student} 已确认个人行动计划。`);
+    } catch {
+      setPermissionNotice("确认方案网络异常，请稍后重试。");
+    }
+  }
+
+  async function updateCoCreationTopic(topic: string) {
+    if (!has("runCoCreation")) {
+      deny("runCoCreation");
+      return;
+    }
+    try {
+      const response = await fetch(`${appBasePath}/api/co-creation/topics`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify({ topic })
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "更新共创主题失败。"));
+        return;
+      }
+      const result: { state: SharedState } = await response.json();
+      applySharedState(result.state);
+      setIdeaDraft(submissionBlueprints["co-creation"].defaultBody);
+      setPermissionNotice(`共创主题已更新为：${result.state.coCreation.topic}`);
+    } catch {
+      setPermissionNotice("更新共创主题网络异常，请稍后重试。");
+    }
+  }
+
+  async function testModelConfig(nextConfig: ModelConfig) {
+    const response = await fetch(`${appBasePath}/api/model/test`, {
+      method: "POST",
+      headers: apiHeaders(),
+      body: JSON.stringify({ modelConfig: nextConfig })
+    });
+    if (!response.ok) {
+      throw new Error(await readApiError(response, "模型连接失败。"));
+    }
+    const result: { providerName: string; model: string; sampleQuality: string; sampleTags: string[] } = await response.json();
+    return `${result.providerName} / ${result.model} 连接成功，样例审核为“${result.sampleQuality}”。`;
+  }
+
+  async function saveAccount(account: DemoAccount) {
+    if (!has("managePermissions")) {
+      deny("managePermissions");
+      return;
+    }
+    try {
+      const response = await fetch(`${appBasePath}/api/admin/accounts`, {
+        method: "POST",
+        headers: apiHeaders(),
+        body: JSON.stringify(account)
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "保存账号失败。"));
+        return;
+      }
+      const result: { state: SharedState; account: DemoAccount } = await response.json();
+      applySharedState(result.state);
+      setPermissionNotice(`账号已保存：${result.account.name}`);
+    } catch {
+      setPermissionNotice("保存账号网络异常，请稍后重试。");
+    }
+  }
+
+  async function updateKnowledgeEntry(id: string, patch: Partial<KnowledgeEntry>) {
+    if (!has("managePermissions")) {
+      deny("managePermissions");
+      return;
+    }
+    try {
+      const response = await fetch(`${appBasePath}/api/knowledge/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: apiHeaders(),
+        body: JSON.stringify(patch)
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "更新知识库失败。"));
+        return;
+      }
+      const result: { state: SharedState; entry: KnowledgeEntry } = await response.json();
+      applySharedState(result.state);
+      setPermissionNotice(`知识库条目已更新：${result.entry.title}`);
+    } catch {
+      setPermissionNotice("更新知识库网络异常，请稍后重试。");
+    }
+  }
+
+  async function deleteKnowledgeEntry(id: string) {
+    if (!has("managePermissions")) {
+      deny("managePermissions");
+      return;
+    }
+    try {
+      const response = await fetch(`${appBasePath}/api/knowledge/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+        headers: apiHeaders(false)
+      });
+      if (!response.ok) {
+        setPermissionNotice(await readApiError(response, "删除知识库失败。"));
+        return;
+      }
+      const result: { state: SharedState } = await response.json();
+      applySharedState(result.state);
+      setPermissionNotice("知识库条目已删除。");
+    } catch {
+      setPermissionNotice("删除知识库网络异常，请稍后重试。");
+    }
   }
 
   if (!currentAccount) {
     return (
       <LoginScreen
+        accounts={accounts}
         loginForm={loginForm}
         setLoginForm={setLoginForm}
         loginError={loginError}
@@ -644,7 +870,10 @@ export function TrainingAgentApp() {
               selectedPlanStudent={selectedPlanStudent}
               onSelectPlanStudent={setSelectedPlanStudent}
               account={currentAccount}
+              accounts={accounts}
+              onSaveAccount={saveAccount}
               onLike={likeItem}
+              onConfirmPlan={confirmPlan}
             />
           )}
           {view === "coach" && (
@@ -683,10 +912,14 @@ export function TrainingAgentApp() {
               onSubmitIdeas={submitCoCreationIdeas}
               onRun={runCoCreationRound}
               onVote={voteForIdea}
+              onUpdateTopic={updateCoCreationTopic}
               canSubmitIdeas={has("submitCoCreationIdeas")}
               canRun={has("runCoCreation")}
               canVote={has("likeContent")}
               currentVoter={currentAccount?.id || currentAccount?.name || ""}
+              currentGroup={currentAccount.groupName || "全班"}
+              selectedGroup={selectedCoCreationGroup}
+              onSelectGroup={setSelectedCoCreationGroup}
               role={currentRole}
             />
           )}
@@ -710,10 +943,18 @@ export function TrainingAgentApp() {
               studentOptions={studentOptions}
               selectedPlanStudent={selectedPlanStudent}
               onSelectPlanStudent={setSelectedPlanStudent}
+              onConfirmPlan={confirmPlan}
             />
           )}
-          {view === "knowledge" && <KnowledgePanel knowledgeBase={knowledgeBase} role={currentRole} />}
-          {view === "model-settings" && <ModelSettingsPanel config={modelConfig} onSave={saveModelConfig} />}
+          {view === "knowledge" && (
+            <KnowledgePanel
+              knowledgeBase={knowledgeBase}
+              role={currentRole}
+              onUpdate={updateKnowledgeEntry}
+              onDelete={deleteKnowledgeEntry}
+            />
+          )}
+          {view === "model-settings" && <ModelSettingsPanel config={modelConfig} onSave={saveModelConfig} onTest={testModelConfig} />}
         </section>
       </div>
     </main>
@@ -721,12 +962,14 @@ export function TrainingAgentApp() {
 }
 
 function LoginScreen({
+  accounts,
   loginForm,
   setLoginForm,
   loginError,
   onLogin,
   onQuickLogin
 }: {
+  accounts: DemoAccount[];
   loginForm: { username: string; password: string };
   setLoginForm: (value: { username: string; password: string }) => void;
   loginError: string;
@@ -753,7 +996,7 @@ function LoginScreen({
         </div>
 
         <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
-          {demoAccounts.map((account) => {
+          {accounts.filter((account) => account.active !== false).map((account) => {
             const profile = roleProfiles.find((item) => item.id === account.role);
             return (
               <button key={account.id} onClick={() => onQuickLogin(account)} className="rounded-lg border border-[var(--line)] p-4 text-left hover:border-[var(--teal)]">
@@ -817,7 +1060,7 @@ function AccountBadge({ account, roleName, onLogout }: { account: DemoAccount; r
       <UserRound size={16} className="text-[var(--teal)]" />
       <div className="leading-4">
         <p className="font-semibold">{account.name}</p>
-        <p className="text-xs text-[var(--muted)]">{roleName} · {account.className}</p>
+        <p className="text-xs text-[var(--muted)]">{roleName} · {account.className} · {account.groupName || "全班"}</p>
       </div>
       <button onClick={onLogout} className="ml-2 rounded-md p-1 text-slate-500 hover:bg-slate-100" title="退出登录">
         <LogOut size={16} />
@@ -843,7 +1086,10 @@ function Dashboard({
   selectedPlanStudent,
   onSelectPlanStudent,
   account,
-  onLike
+  accounts,
+  onSaveAccount,
+  onLike,
+  onConfirmPlan
 }: {
   approvedCount: number;
   phaseStats: Array<(typeof coachModules)[number] & { entries: number; submissions: number }>;
@@ -861,7 +1107,10 @@ function Dashboard({
   selectedPlanStudent: string;
   onSelectPlanStudent: (student: string) => void;
   account: DemoAccount;
+  accounts: DemoAccount[];
+  onSaveAccount: (account: DemoAccount) => void;
   onLike: (id: string) => void;
+  onConfirmPlan: (studentName?: string) => void;
 }) {
   if (role.id === "admin") {
     return (
@@ -872,8 +1121,10 @@ function Dashboard({
         items={items}
         knowledgeBase={knowledgeBase}
         coCreation={coCreation}
+        plansByStudent={plansByStudent}
         onOpen={onOpen}
-        accounts={demoAccounts}
+        accounts={accounts}
+        onSaveAccount={onSaveAccount}
         onLike={onLike}
       />
     );
@@ -884,10 +1135,12 @@ function Dashboard({
       <StudentDashboard
         phaseStats={phaseStats}
         items={items}
+        knowledgeBase={knowledgeBase}
         coCreation={coCreation}
         plan={plan}
         account={account}
         onOpen={onOpen}
+        onConfirmPlan={onConfirmPlan}
       />
     );
   }
@@ -998,8 +1251,10 @@ function AdminDashboard({
   items,
   knowledgeBase,
   coCreation,
+  plansByStudent,
   onOpen,
   accounts,
+  onSaveAccount,
   onLike
 }: {
   role: (typeof roleProfiles)[number];
@@ -1008,8 +1263,10 @@ function AdminDashboard({
   items: LearningItem[];
   knowledgeBase: KnowledgeEntry[];
   coCreation: CoCreationState;
+  plansByStudent: PlansByStudent;
   onOpen: (view: ViewId) => void;
   accounts: DemoAccount[];
+  onSaveAccount: (account: DemoAccount) => void;
   onLike: (id: string) => void;
 }) {
   const pendingItems = items.filter((item) => !item.inKnowledgeBase).length;
@@ -1051,6 +1308,16 @@ function AdminDashboard({
         onOpen={onOpen}
       />
 
+      <AdminDataBoard
+        items={items}
+        knowledgeBase={knowledgeBase}
+        coCreation={coCreation}
+        plansByStudent={plansByStudent}
+        accounts={accounts}
+        phaseStats={phaseStats}
+        onOpen={onOpen}
+      />
+
       <ClassSubmissionPanel items={items} onLike={onLike} canLike={role.allowed.includes("likeContent")} title="全班学员提交审阅" />
 
       <section className="grid grid-cols-[1fr_0.8fr] gap-5 max-xl:grid-cols-1">
@@ -1081,31 +1348,489 @@ function AdminDashboard({
           </div>
         </div>
 
+        <AccountManagementPanel accounts={accounts} onSaveAccount={onSaveAccount} />
+      </section>
+
+      <section className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
+        <Metric label="知识库条目" value={String(knowledgeBase.length)} />
+        <Metric label="归档主题" value={String(coCreation.archives?.length || 0)} />
+        <Metric label="当前主题" value={coCreation.converged ? "待更新" : "收集中"} />
+      </section>
+    </div>
+  );
+}
+
+function AdminDataBoard({
+  items,
+  knowledgeBase,
+  coCreation,
+  plansByStudent,
+  accounts,
+  phaseStats,
+  onOpen
+}: {
+  items: LearningItem[];
+  knowledgeBase: KnowledgeEntry[];
+  coCreation: CoCreationState;
+  plansByStudent: PlansByStudent;
+  accounts: DemoAccount[];
+  phaseStats: Array<(typeof coachModules)[number] & { entries: number; submissions: number }>;
+  onOpen: (view: ViewId) => void;
+}) {
+  const activeStudents = accounts.filter((account) => account.role === "student" && account.active !== false);
+  const accountByName = new Map(activeStudents.map((account) => [account.name, account]));
+  const submittedNames = new Set(items.map((item) => item.author));
+  const submittedStudentCount = activeStudents.filter((student) => submittedNames.has(student.name)).length;
+  const missingStudents = activeStudents.filter((student) => !submittedNames.has(student.name));
+  const lowQualityItems = items.filter((item) => item.quality === "待补充");
+  const compliantItems = items.filter((item) => item.quality === "合规");
+  const excellentItems = items.filter((item) => item.quality === "优秀" || item.isExcellent);
+  const zeroLikeItems = items.filter((item) => item.likes === 0);
+  const totalLikes = items.reduce((sum, item) => sum + item.likes, 0);
+  const knowledgeLinkedCount = items.filter((item) => item.inKnowledgeBase).length;
+  const reviewedCount = items.filter((item) => Boolean(item.quality)).length;
+  const externalReviewedCount = items.filter((item) => item.reviewSource === "minimax" || item.reviewSource === "custom").length;
+  const planValues = Object.values(plansByStudent);
+  const confirmedPlans = planValues.filter((plan) => plan.status === "已确认");
+  const pendingPlans = planValues.filter((plan) => plan.status === "待确认");
+  const checkpointRows = planValues.flatMap((plan) => plan.checkpoints.map((checkpoint) => ({ plan, checkpoint })));
+  const dueCheckpoints = checkpointRows.filter(({ checkpoint }) => checkpoint.status !== "已评估" && isDueDate(checkpoint.date));
+  const hiddenIdeaCount = (coCreation.hiddenIdeas?.length || 0) + (coCreation.archives || []).reduce((sum, archive) => sum + (archive.hiddenIdeas?.length || 0), 0);
+  const reportCount = (coCreation.archives?.length || 0) + (coCreation.report ? 1 : 0);
+  const visibleIdeaCount = coCreation.ideas.length;
+  const averageLikes = items.length ? (totalLikes / items.length).toFixed(1) : "0";
+  const healthScore = Math.round(
+    getRatio(submittedStudentCount, activeStudents.length) * 32 +
+      getRatio(items.length - lowQualityItems.length, items.length || 1) * 24 +
+      getRatio(items.length - zeroLikeItems.length, items.length || 1) * 16 +
+      getRatio(knowledgeLinkedCount, items.length || 1) * 16 +
+      (planValues.length ? getRatio(confirmedPlans.length, planValues.length) : 1) * 12
+  );
+  const healthTone = healthScore >= 85 ? "text-teal-700 bg-teal-50 border-teal-200" : healthScore >= 70 ? "text-[#92620f] bg-[#fff4d8] border-[#eed38e]" : "text-[#a43f5a] bg-[#fde9ef] border-[#f2bdcd]";
+  const reviewSourceStats = [
+    { label: "外部 AI 审核", value: externalReviewedCount, detail: "MiniMax 或自定义模型" },
+    { label: "本地规则/历史审核", value: Math.max(0, reviewedCount - externalReviewedCount), detail: "无凭证时兜底审核" }
+  ];
+  const qualityStats = [
+    { label: "优秀", value: excellentItems.length, color: "bg-[var(--teal)]" },
+    { label: "合规", value: compliantItems.length, color: "bg-[#6d5bd0]" },
+    { label: "待补充", value: lowQualityItems.length, color: "bg-[#b94a66]" }
+  ];
+  const groupNames = Array.from(new Set([...coCreation.groups, ...activeStudents.map((student) => student.groupName).filter(Boolean)]));
+  const groupStats = groupNames.map((group) => {
+    const members = activeStudents.filter((student) => student.groupName === group);
+    const submissions = items.filter((item) => accountByName.get(item.author)?.groupName === group).length;
+    const ideas = coCreation.ideas.filter((idea) => coCreation.ideaGroups?.[idea] === group).length;
+    const votes = Object.values(coCreation.groupVotes || {}).reduce((sum, groupVotes) => sum + (groupVotes[group] || 0), 0);
+    return { group, members: members.length, submissions, ideas, votes, signal: submissions + ideas + votes };
+  });
+  const maxGroupSignal = Math.max(1, ...groupStats.map((group) => group.signal));
+  const recentItems = [...items].sort((a, b) => getDateValue(b.createdAt) - getDateValue(a.createdAt)).slice(0, 5);
+  const attentionItems = [
+    missingStudents.length
+      ? {
+          title: "未提交学员",
+          value: String(missingStudents.length),
+          body: missingStudents.slice(0, 4).map((student) => student.name).join("、")
+        }
+      : null,
+    lowQualityItems.length
+      ? {
+          title: "待补充内容",
+          value: String(lowQualityItems.length),
+          body: lowQualityItems.slice(0, 2).map((item) => item.title).join("、")
+        }
+      : null,
+    zeroLikeItems.length
+      ? {
+          title: "低互动提交",
+          value: String(zeroLikeItems.length),
+          body: zeroLikeItems.slice(0, 2).map((item) => item.author).join("、")
+        }
+      : null,
+    coCreation.converged
+      ? {
+          title: "共创主题待更新",
+          value: "1",
+          body: "当前主题已收敛，教师应发布新的共创主题。"
+        }
+      : null,
+    pendingPlans.length
+      ? {
+          title: "行动计划待确认",
+          value: String(pendingPlans.length),
+          body: pendingPlans.slice(0, 3).map((plan) => plan.student).join("、")
+        }
+      : null,
+    dueCheckpoints.length
+      ? {
+          title: "转化节点待追踪",
+          value: String(dueCheckpoints.length),
+          body: dueCheckpoints.slice(0, 2).map(({ plan, checkpoint }) => `${plan.student} ${checkpoint.day}`).join("、")
+        }
+      : null
+  ].filter(Boolean) as Array<{ title: string; value: string; body: string }>;
+
+  const explicitCards = [
+    {
+      label: "提交覆盖率",
+      value: formatPercent(submittedStudentCount, activeStudents.length),
+      detail: `${submittedStudentCount}/${activeStudents.length || 0} 名活跃学员`,
+      icon: Users,
+      tone: "border-teal-200 bg-teal-50 text-teal-700"
+    },
+    {
+      label: "合规以上",
+      value: formatPercent(items.length - lowQualityItems.length, items.length),
+      detail: `${items.length - lowQualityItems.length}/${items.length} 条可用提交`,
+      icon: CheckCircle2,
+      tone: "border-[#d9d1ff] bg-[#f1edff] text-[#6d5bd0]"
+    },
+    {
+      label: "知识沉淀",
+      value: String(knowledgeBase.length),
+      detail: `${knowledgeLinkedCount} 条来自学员提交`,
+      icon: Database,
+      tone: "border-[#f2c5bf] bg-[#fff0ee] text-[#bd5145]"
+    },
+    {
+      label: "报告产出",
+      value: String(reportCount),
+      detail: `${coCreation.archives?.length || 0} 个归档主题`,
+      icon: FileText,
+      tone: "border-[#eed38e] bg-[#fff4d8] text-[#92620f]"
+    }
+  ];
+
+  const implicitCards = [
+    {
+      label: "未提交",
+      value: String(missingStudents.length),
+      detail: missingStudents.length ? missingStudents.slice(0, 3).map((student) => student.name).join("、") : "暂无缺口",
+      icon: MessageSquareWarning,
+      tone: missingStudents.length ? "border-[#f2bdcd] bg-[#fde9ef] text-[#a43f5a]" : "border-teal-200 bg-teal-50 text-teal-700"
+    },
+    {
+      label: "低互动",
+      value: String(zeroLikeItems.length),
+      detail: zeroLikeItems.length ? "需要教师二次关注" : "互动正常",
+      icon: ThumbsUp,
+      tone: zeroLikeItems.length ? "border-[#eed38e] bg-[#fff4d8] text-[#92620f]" : "border-teal-200 bg-teal-50 text-teal-700"
+    },
+    {
+      label: "隐藏观点",
+      value: String(hiddenIdeaCount),
+      detail: "无效/重复观点不进入可见分类",
+      icon: EyeOff,
+      tone: hiddenIdeaCount ? "border-[#d9d1ff] bg-[#f1edff] text-[#6d5bd0]" : "border-slate-200 bg-slate-50 text-slate-600"
+    },
+    {
+      label: "待确认计划",
+      value: String(pendingPlans.length),
+      detail: planValues.length ? `${confirmedPlans.length}/${planValues.length} 已确认` : "暂无计划",
+      icon: Clock3,
+      tone: pendingPlans.length ? "border-[#eed38e] bg-[#fff4d8] text-[#92620f]" : "border-teal-200 bg-teal-50 text-teal-700"
+    }
+  ];
+
+  return (
+    <section className="space-y-4">
+      <div className="flex items-start justify-between gap-5 max-lg:block">
+        <div className="flex items-start gap-3">
+          <div className={`grid h-12 w-12 place-items-center rounded-lg border ${healthTone}`}>
+            <Gauge size={22} />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-[var(--teal)]">管理员数据看板</p>
+            <h3 className="mt-2 text-2xl font-bold">显性反馈与隐性反馈</h3>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-[var(--muted)]">显性反馈来自提交、点赞、审核、入库和报告；隐性反馈用于发现缺交、低互动、待补充、隐藏观点和计划节点风险。</p>
+          </div>
+        </div>
+        <div className="mt-0 grid min-w-[280px] grid-cols-2 gap-2 max-lg:mt-4">
+          <Metric label="运行健康度" value={`${healthScore}%`} />
+          <Metric label="平均点赞" value={averageLikes} />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-3 max-xl:grid-cols-2 max-md:grid-cols-1">
+        {explicitCards.map((card) => {
+          const Icon = card.icon;
+          return (
+            <div key={card.label} className={`rounded-lg border bg-white p-4 ${card.tone}`}>
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-sm font-semibold">{card.label}</p>
+                <Icon size={18} />
+              </div>
+              <p className="mt-3 text-2xl font-bold text-[var(--foreground)]">{card.value}</p>
+              <p className="mt-1 text-xs leading-5 text-[var(--muted)]">{card.detail}</p>
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-[1.05fr_0.95fr] gap-5 max-xl:grid-cols-1">
         <div className="rounded-lg border border-[var(--line)] bg-white p-5">
-          <h3 className="text-xl font-bold">账号权限清单</h3>
-          <div className="mt-4 space-y-3">
-            {accounts.map((account) => {
-              const profile = roleProfiles.find((item) => item.id === account.role);
-              return (
-                <div key={account.id} className="rounded-lg border border-[var(--line)] p-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold">{account.name}</p>
-                      <p className="mt-1 text-xs text-[var(--muted)]">{account.username} · {account.title}</p>
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <TrendingUp size={19} className="text-[var(--teal)]" />
+              <h4 className="text-lg font-bold">显性反馈</h4>
+            </div>
+            <button onClick={() => onOpen("knowledge")} className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-semibold hover:border-[var(--teal)]">
+              查看知识库
+            </button>
+          </div>
+          <div className="space-y-5">
+            <div>
+              <p className="mb-3 text-sm font-semibold">提交质量分布</p>
+              <div className="space-y-3">
+                {qualityStats.map((item) => {
+                  const width = getPercentNumber(item.value, items.length);
+                  return (
+                    <div key={item.label}>
+                      <div className="mb-1 flex justify-between text-xs text-[var(--muted)]">
+                        <span>{item.label}</span>
+                        <span>{item.value} 条 · {width}%</span>
+                      </div>
+                      <div className="h-2 rounded-full bg-slate-100">
+                        <div className={`h-2 rounded-full ${item.color}`} style={{ width: `${width}%` }} />
+                      </div>
                     </div>
-                    <span className="rounded-md bg-teal-50 px-2 py-1 text-xs font-semibold text-teal-700">{profile?.name}</span>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
+              {reviewSourceStats.map((item) => (
+                <div key={item.label} className="border-t border-[var(--line)] pt-3">
+                  <p className="text-sm font-semibold">{item.label}</p>
+                  <p className="mt-1 text-2xl font-bold">{item.value}</p>
+                  <p className="mt-1 text-xs leading-5 text-[var(--muted)]">{item.detail}</p>
+                </div>
+              ))}
+            </div>
+
+            <div>
+              <p className="mb-3 text-sm font-semibold">各环节提交与入库</p>
+              <div className="grid grid-cols-5 gap-2 max-lg:grid-cols-3 max-md:grid-cols-1">
+                {phaseStats.map((module) => {
+                  const rate = getPercentNumber(module.entries, module.submissions);
+                  return (
+                    <button key={module.id} onClick={() => onOpen(module.id)} className="rounded-lg border border-[var(--line)] p-3 text-left hover:border-[var(--teal)]">
+                      <p className="text-sm font-semibold">{module.title}</p>
+                      <p className="mt-1 text-xs text-[var(--muted)]">{module.submissions} 提交 · {module.entries} 入库</p>
+                      <div className="mt-3 h-1.5 rounded-full bg-slate-100">
+                        <div className="h-1.5 rounded-full bg-[var(--teal)]" style={{ width: `${rate}%` }} />
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-[var(--line)] bg-white p-5">
+          <div className="mb-5 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2">
+              <BarChart3 size={19} className="text-[#6d5bd0]" />
+              <h4 className="text-lg font-bold">隐性反馈</h4>
+            </div>
+            <span className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs text-[var(--muted)]">后台信号</span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
+            {implicitCards.map((card) => {
+              const Icon = card.icon;
+              return (
+                <div key={card.label} className={`rounded-lg border p-3 ${card.tone}`}>
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold">{card.label}</p>
+                    <Icon size={17} />
+                  </div>
+                  <p className="mt-2 text-2xl font-bold text-[var(--foreground)]">{card.value}</p>
+                  <p className="mt-1 text-xs leading-5 text-[var(--muted)]">{card.detail}</p>
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-5">
+            <p className="mb-3 flex items-center gap-2 text-sm font-semibold">
+              <AlertTriangle size={16} className="text-[#b94a66]" />
+              关注队列
+            </p>
+            <div className="space-y-2">
+              {attentionItems.length ? (
+                attentionItems.map((item) => (
+                  <div key={item.title} className="flex items-center justify-between gap-3 border-t border-[var(--line)] pt-3 text-sm">
+                    <div>
+                      <p className="font-semibold">{item.title}</p>
+                      <p className="mt-1 text-xs leading-5 text-[var(--muted)]">{item.body}</p>
+                    </div>
+                    <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold">{item.value}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="rounded-lg border border-dashed border-[var(--line)] p-4 text-sm text-[var(--muted)]">当前暂无高优先级隐性风险。</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-[1fr_0.85fr] gap-5 max-xl:grid-cols-1">
+        <div className="rounded-lg border border-[var(--line)] bg-white p-5">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h4 className="text-lg font-bold">小组参与热力</h4>
+            <span className="text-xs text-[var(--muted)]">{visibleIdeaCount} 条可见共创观点</span>
+          </div>
+          <div className="space-y-3">
+            {groupStats.map((group) => {
+              const width = getPercentNumber(group.signal, maxGroupSignal);
+              return (
+                <div key={group.group}>
+                  <div className="mb-1 flex justify-between text-sm">
+                    <span className="font-semibold">{group.group}</span>
+                    <span className="text-xs text-[var(--muted)]">{group.members} 人 · {group.submissions} 提交 · {group.ideas} 观点 · {group.votes} 票</span>
+                  </div>
+                  <div className="h-2 rounded-full bg-slate-100">
+                    <div className="h-2 rounded-full bg-[#6d5bd0]" style={{ width: `${width}%` }} />
                   </div>
                 </div>
               );
             })}
           </div>
-          <div className="mt-4 grid grid-cols-3 gap-2">
-            <Metric label="知识库" value={String(knowledgeBase.length)} />
-            <Metric label="共创轮次" value={`${coCreation.round}/${coCreation.maxRounds}`} />
-            <Metric label="报告" value={coCreation.report ? "已生成" : "未生成"} />
+          <button onClick={() => onOpen("co-creation")} className="mt-4 flex w-full items-center justify-between rounded-lg border border-[var(--line)] px-4 py-3 text-sm font-semibold hover:border-[var(--teal)]">
+            查看共创环数据
+            <ChevronRight size={16} />
+          </button>
+        </div>
+
+        <div className="rounded-lg border border-[var(--line)] bg-white p-5">
+          <div className="mb-4 flex items-center justify-between gap-3">
+            <h4 className="text-lg font-bold">最新课堂反馈</h4>
+            <span className="text-xs text-[var(--muted)]">按提交时间排序</span>
+          </div>
+          <div className="space-y-3">
+            {recentItems.map((item) => (
+              <div key={item.id} className="border-t border-[var(--line)] pt-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold">{item.title}</p>
+                    <p className="mt-1 text-xs text-[var(--muted)]">{item.author} · {getPhaseTitle(item.phase)} · {formatShortDate(item.createdAt)}</p>
+                  </div>
+                  <span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-semibold">{item.quality}</span>
+                </div>
+              </div>
+            ))}
+            {!recentItems.length && <div className="rounded-lg border border-dashed border-[var(--line)] p-4 text-sm text-[var(--muted)]">暂无提交反馈。</div>}
           </div>
         </div>
-      </section>
+      </div>
+    </section>
+  );
+}
+
+function AccountManagementPanel({ accounts, onSaveAccount }: { accounts: DemoAccount[]; onSaveAccount: (account: DemoAccount) => void }) {
+  const emptyAccount: DemoAccount = {
+    id: "",
+    username: "",
+    password: "student123",
+    name: "",
+    role: "student",
+    className: "青年教师研修一班",
+    groupName: "第一小组",
+    title: "参训学员",
+    active: true
+  };
+  const [editingId, setEditingId] = useState("");
+  const [draft, setDraft] = useState<DemoAccount>(emptyAccount);
+
+  function startEdit(account?: DemoAccount) {
+    setEditingId(account?.id || "new");
+    setDraft(account || emptyAccount);
+  }
+
+  return (
+    <div className="rounded-lg border border-[var(--line)] bg-white p-5">
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <h3 className="text-xl font-bold">账号管理</h3>
+        <button onClick={() => startEdit()} className="rounded-lg bg-[var(--teal)] px-3 py-2 text-sm font-semibold text-white">
+          新增账号
+        </button>
+      </div>
+
+      {editingId && (
+        <div className="mb-4 rounded-lg border border-teal-200 bg-teal-50 p-4">
+          <div className="grid grid-cols-2 gap-3 max-md:grid-cols-1">
+            <label className="text-sm font-semibold">
+              账号
+              <input value={draft.username} onChange={(event) => setDraft({ ...draft, username: event.target.value })} className="mt-2 w-full rounded-lg border border-[var(--line)] px-3 py-2 font-normal" />
+            </label>
+            <label className="text-sm font-semibold">
+              密码
+              <input value={draft.password} onChange={(event) => setDraft({ ...draft, password: event.target.value })} className="mt-2 w-full rounded-lg border border-[var(--line)] px-3 py-2 font-normal" />
+            </label>
+            <label className="text-sm font-semibold">
+              姓名
+              <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} className="mt-2 w-full rounded-lg border border-[var(--line)] px-3 py-2 font-normal" />
+            </label>
+            <label className="text-sm font-semibold">
+              角色
+              <select value={draft.role} onChange={(event) => setDraft({ ...draft, role: event.target.value as DemoAccount["role"] })} className="mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 font-normal">
+                <option value="student">学员</option>
+                <option value="teacher">班主任</option>
+                <option value="admin">管理员</option>
+              </select>
+            </label>
+            <label className="text-sm font-semibold">
+              班级
+              <input value={draft.className} onChange={(event) => setDraft({ ...draft, className: event.target.value })} className="mt-2 w-full rounded-lg border border-[var(--line)] px-3 py-2 font-normal" />
+            </label>
+            <label className="text-sm font-semibold">
+              小组
+              <input value={draft.groupName} onChange={(event) => setDraft({ ...draft, groupName: event.target.value })} className="mt-2 w-full rounded-lg border border-[var(--line)] px-3 py-2 font-normal" />
+            </label>
+            <label className="text-sm font-semibold">
+              职责说明
+              <input value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} className="mt-2 w-full rounded-lg border border-[var(--line)] px-3 py-2 font-normal" />
+            </label>
+            <label className="flex items-center gap-2 pt-7 text-sm font-semibold">
+              <input type="checkbox" checked={draft.active !== false} onChange={(event) => setDraft({ ...draft, active: event.target.checked })} className="h-4 w-4 accent-[var(--teal)]" />
+              启用账号
+            </label>
+          </div>
+          <div className="mt-4 flex gap-2">
+            <button onClick={() => onSaveAccount(draft)} className="rounded-lg bg-[var(--teal)] px-4 py-2 text-sm font-semibold text-white">保存</button>
+            <button onClick={() => setEditingId("")} className="rounded-lg border border-[var(--line)] px-4 py-2 text-sm font-semibold">取消</button>
+          </div>
+        </div>
+      )}
+
+      <div className="space-y-3">
+        {accounts.map((account) => {
+          const profile = roleProfiles.find((item) => item.id === account.role);
+          return (
+            <div key={account.id} className="rounded-lg border border-[var(--line)] p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-sm font-semibold">{account.name}</p>
+                  <p className="mt-1 text-xs text-[var(--muted)]">{account.username} · {account.groupName} · {account.title}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`rounded-md px-2 py-1 text-xs font-semibold ${account.active === false ? "bg-slate-100 text-slate-500" : "bg-teal-50 text-teal-700"}`}>
+                    {account.active === false ? "停用" : profile?.name}
+                  </span>
+                  <button onClick={() => startEdit(account)} className="rounded-md border border-[var(--line)] px-2 py-1 text-xs font-semibold">编辑</button>
+                  <button onClick={() => onSaveAccount({ ...account, active: account.active === false })} className="rounded-md border border-[var(--line)] px-2 py-1 text-xs font-semibold">
+                    {account.active === false ? "启用" : "停用"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1124,17 +1849,26 @@ function ClassSubmissionPanel({
   const authors = Array.from(new Set(items.map((item) => item.author))).sort();
   const [selectedAuthor, setSelectedAuthor] = useState("全部学员");
   const [selectedPhase, setSelectedPhase] = useState<PhaseId | "all">("all");
-  const [status, setStatus] = useState<"all" | "knowledge" | "pending">("all");
+  const [status, setStatus] = useState<"all" | "excellent" | "knowledge" | "pending">("all");
+  const [page, setPage] = useState(1);
+  const pageSize = 6;
 
   const filteredItems = items.filter((item) => {
     if (selectedAuthor !== "全部学员" && item.author !== selectedAuthor) return false;
     if (selectedPhase !== "all" && item.phase !== selectedPhase) return false;
+    if (status === "excellent" && !item.isExcellent) return false;
     if (status === "knowledge" && !item.inKnowledgeBase) return false;
-    if (status === "pending" && item.inKnowledgeBase) return false;
+    if (status === "pending" && (item.isExcellent || item.inKnowledgeBase)) return false;
     return true;
   });
 
   const selectedCount = selectedAuthor === "全部学员" ? items.length : items.filter((item) => item.author === selectedAuthor).length;
+  const totalPages = Math.max(1, Math.ceil(filteredItems.length / pageSize));
+  const visibleItems = filteredItems.slice((page - 1) * pageSize, page * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [selectedAuthor, selectedPhase, status, items.length]);
 
   return (
     <section className="rounded-lg border border-[var(--line)] bg-white">
@@ -1188,6 +1922,7 @@ function ClassSubmissionPanel({
               className="mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 font-normal outline-none focus:border-[var(--teal)]"
             >
               <option value="all">全部状态</option>
+              <option value="excellent">优秀池</option>
               <option value="knowledge">已入库</option>
               <option value="pending">待沉淀</option>
             </select>
@@ -1196,10 +1931,23 @@ function ClassSubmissionPanel({
       </div>
 
       <div className="grid gap-3 p-4">
-        {filteredItems.length ? (
-          filteredItems.map((item) => <LearningItemCard key={item.id} item={item} onLike={onLike} canLike={canLike} />)
+        {visibleItems.length ? (
+          visibleItems.map((item) => <LearningItemCard key={item.id} item={item} onLike={onLike} canLike={canLike} />)
         ) : (
           <div className="rounded-lg border border-dashed border-[var(--line)] p-8 text-center text-sm text-[var(--muted)]">当前筛选条件下暂无提交内容。</div>
+        )}
+        {filteredItems.length > pageSize && (
+          <div className="flex items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--surface-strong)] px-3 py-2 text-sm">
+            <span>第 {page}/{totalPages} 页，共 {filteredItems.length} 条</span>
+            <div className="flex gap-2">
+              <button onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1} className="rounded-md border border-[var(--line)] bg-white px-3 py-1 disabled:text-slate-400">
+                上一页
+              </button>
+              <button onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages} className="rounded-md border border-[var(--line)] bg-white px-3 py-1 disabled:text-slate-400">
+                下一页
+              </button>
+            </div>
+          </div>
         )}
       </div>
     </section>
@@ -1333,20 +2081,26 @@ function TeacherHero({
 function StudentDashboard({
   phaseStats,
   items,
+  knowledgeBase,
   coCreation,
   plan,
   account,
-  onOpen
+  onOpen,
+  onConfirmPlan
 }: {
   phaseStats: Array<(typeof coachModules)[number] & { entries: number; submissions: number }>;
   items: LearningItem[];
+  knowledgeBase: KnowledgeEntry[];
   coCreation: CoCreationState;
   plan: PersonalPlan | null;
   account: DemoAccount;
   onOpen: (view: ViewId) => void;
+  onConfirmPlan: (studentName?: string) => void;
 }) {
   const myItems = items.filter((item) => item.author === account.name);
   const myApproved = myItems.filter((item) => item.inKnowledgeBase).length;
+  const dueCheckpoints = getDueCheckpoints(plan);
+  const publicExcellent = knowledgeBase.slice(0, 3);
 
   return (
     <div className="space-y-6">
@@ -1387,6 +2141,42 @@ function StudentDashboard({
         onOpen={onOpen}
       />
 
+      {(dueCheckpoints.length > 0 || plan?.status === "待确认") && (
+        <section className="rounded-lg border border-[#f2bdcd] bg-[#fde9ef] p-5">
+          <div className="flex items-start justify-between gap-4 max-md:block">
+            <div className="flex gap-3">
+              <Bell className="mt-1 text-[#a43f5a]" size={20} />
+              <div>
+                <h3 className="text-xl font-bold">训后节点提醒</h3>
+                <p className="mt-1 text-sm leading-6 text-[#6f3042]">
+                  {plan?.status === "待确认" ? "你的个人行动计划待确认，确认后转化教练会按节点追踪成果。" : "已有节点到期，请在转化环提交成果证据。"}
+                </p>
+              </div>
+            </div>
+            {plan?.status === "待确认" ? (
+              <button onClick={() => onConfirmPlan(account.name)} className="mt-0 flex items-center gap-2 rounded-lg bg-[#b94a66] px-4 py-2.5 text-sm font-semibold text-white max-md:mt-3">
+                <CheckCircle2 size={16} />
+                确认我的方案
+              </button>
+            ) : (
+              <button onClick={() => onOpen("transformation")} className="mt-0 rounded-lg bg-[#b94a66] px-4 py-2.5 text-sm font-semibold text-white max-md:mt-3">
+                去提交成果
+              </button>
+            )}
+          </div>
+          {!!dueCheckpoints.length && (
+            <div className="mt-4 grid grid-cols-2 gap-3 max-md:grid-cols-1">
+              {dueCheckpoints.map((checkpoint) => (
+                <div key={checkpoint.day} className="rounded-lg border border-[#f2bdcd] bg-white px-3 py-2 text-sm">
+                  <p className="font-semibold">{checkpoint.day} · {checkpoint.label}</p>
+                  <p className="mt-1 text-xs text-[var(--muted)]">预计节点：{checkpoint.date || "立即提交"}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
       <section className="grid grid-cols-3 gap-4 max-xl:grid-cols-2 max-md:grid-cols-1">
         {phaseStats
           .filter((module) => ["deep-study", "practice", "reflection"].includes(module.id))
@@ -1402,6 +2192,27 @@ function StudentDashboard({
               </button>
             );
           })}
+      </section>
+
+      <section className="rounded-lg border border-[var(--line)] bg-white p-5">
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div>
+            <h3 className="text-xl font-bold">公开优秀内容</h3>
+            <p className="mt-1 text-sm text-[var(--muted)]">点赞达标并入库的内容会公开给学员参考。</p>
+          </div>
+          <button onClick={() => onOpen("knowledge")} className="rounded-lg border border-[var(--line)] px-3 py-2 text-sm font-semibold hover:border-[#a43f5a]">
+            查看全部
+          </button>
+        </div>
+        <div className="grid grid-cols-3 gap-3 max-lg:grid-cols-1">
+          {publicExcellent.map((entry) => (
+            <div key={entry.id} className="rounded-lg border border-[var(--line)] p-4">
+              <p className="font-semibold">{entry.title}</p>
+              <p className="mt-1 text-xs text-[var(--muted)]">{entry.source}</p>
+              <p className="mt-2 line-clamp-3 text-sm leading-6 text-slate-600">{entry.summary}</p>
+            </div>
+          ))}
+        </div>
       </section>
     </div>
   );
@@ -1504,6 +2315,14 @@ function WorkflowPanel({
 }) {
   const delivery = deliveryByPhase[activePhase];
   const blueprint = submissionBlueprints[activePhase];
+  const [page, setPage] = useState(1);
+  const pageSize = 6;
+  const totalPages = Math.max(1, Math.ceil(activeItems.length / pageSize));
+  const visibleItems = activeItems.slice((page - 1) * pageSize, page * pageSize);
+
+  useEffect(() => {
+    setPage(1);
+  }, [activePhase, activeItems.length]);
 
   return (
     <div className="grid grid-cols-[0.8fr_1.2fr] gap-5 max-xl:grid-cols-1">
@@ -1576,6 +2395,7 @@ function WorkflowPanel({
               className="mt-2 w-full resize-none rounded-lg border border-[var(--line)] px-3 py-2 font-normal leading-6 outline-none focus:border-[var(--teal)] disabled:bg-slate-50 disabled:text-slate-400"
             />
           </label>
+          {activePhase === "reflection" && <GrowGuidedBuilder draftBody={draft.body} onChange={(body) => setDraft({ ...draft, body })} disabled={!canSubmit} />}
           <ImageUploadBox attachments={attachments} setAttachments={setAttachments} onUploadImage={onUploadImage} disabled={!canSubmit} />
           <div className="mt-4 flex flex-wrap gap-2">
             {blueprint.qualityChecks.map((check) => (
@@ -1606,14 +2426,82 @@ function WorkflowPanel({
             <h3 className="font-bold">互动内容池</h3>
           </div>
           <div className="grid gap-3 p-4">
-            {activeItems.map((item) => (
+            {visibleItems.map((item) => (
               <LearningItemCard key={item.id} item={item} onLike={onLike} canLike={canLike} />
             ))}
+            {activeItems.length > pageSize && (
+              <div className="flex items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--surface-strong)] px-3 py-2 text-sm">
+                <span>第 {page}/{totalPages} 页</span>
+                <div className="flex gap-2">
+                  <button onClick={() => setPage((value) => Math.max(1, value - 1))} disabled={page === 1} className="rounded-md border border-[var(--line)] bg-white px-3 py-1 disabled:text-slate-400">
+                    上一页
+                  </button>
+                  <button onClick={() => setPage((value) => Math.min(totalPages, value + 1))} disabled={page === totalPages} className="rounded-md border border-[var(--line)] bg-white px-3 py-1 disabled:text-slate-400">
+                    下一页
+                  </button>
+                </div>
+              </div>
+            )}
+            {!activeItems.length && (
+              <div className="rounded-lg border border-dashed border-[var(--line)] p-8 text-center text-sm text-[var(--muted)]">当前环节暂无提交内容。</div>
+            )}
           </div>
         </div>
       </section>
     </div>
   );
+}
+
+function GrowGuidedBuilder({ draftBody, onChange, disabled }: { draftBody: string; onChange: (body: string) => void; disabled: boolean }) {
+  const parts = parseGrowBody(draftBody);
+  const updatePart = (key: keyof typeof parts, value: string) => {
+    onChange(
+      [
+        `Goal 目标：${key === "goal" ? value : parts.goal}`,
+        `Reality 现状：${key === "reality" ? value : parts.reality}`,
+        `Options 选择：${key === "options" ? value : parts.options}`,
+        `Will 行动：${key === "will" ? value : parts.will}`
+      ].join("\n")
+    );
+  };
+
+  const fields: Array<{ key: keyof typeof parts; label: string; hint: string }> = [
+    { key: "goal", label: "Goal 目标", hint: "你希望改变的具体教学问题" },
+    { key: "reality", label: "Reality 现状", hint: "当前真实情况和证据" },
+    { key: "options", label: "Options 选择", hint: "可以尝试的多个方案" },
+    { key: "will", label: "Will 行动", hint: "下一次明确要做的动作" }
+  ];
+
+  return (
+    <div className="mt-4 rounded-lg border border-[#d9d1ff] bg-[#f1edff] p-4">
+      <p className="text-sm font-semibold text-[#6d5bd0]">GROW 分步引导</p>
+      <div className="mt-3 grid grid-cols-2 gap-3 max-md:grid-cols-1">
+        {fields.map((field) => (
+          <label key={field.key} className="text-sm font-semibold">
+            {field.label}
+            <textarea
+              value={parts[field.key]}
+              onChange={(event) => updatePart(field.key, event.target.value)}
+              disabled={disabled}
+              rows={3}
+              placeholder={field.hint}
+              className="mt-2 w-full resize-none rounded-lg border border-[#d9d1ff] bg-white px-3 py-2 font-normal leading-6 outline-none focus:border-[#6d5bd0] disabled:bg-slate-50"
+            />
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function parseGrowBody(body: string) {
+  const read = (pattern: RegExp) => body.match(pattern)?.[1]?.trim() || "";
+  return {
+    goal: read(/(?:Goal\s*)?目标[：:]\s*([\s\S]*?)(?=(?:Reality\s*)?现状[：:]|Options\s*选择[：:]|Will\s*行动[：:]|$)/i),
+    reality: read(/(?:Reality\s*)?现状[：:]\s*([\s\S]*?)(?=Options\s*选择[：:]|Will\s*行动[：:]|$)/i),
+    options: read(/(?:Options\s*)?选择[：:]\s*([\s\S]*?)(?=Will\s*行动[：:]|$)/i),
+    will: read(/(?:Will\s*)?行动[：:]\s*([\s\S]*)$/i)
+  };
 }
 
 function DeliveryLine({ label, value }: { label: string; value: string }) {
@@ -1695,6 +2583,7 @@ function LearningItemCard({ item, onLike, canLike }: { item: LearningItem; onLik
             <span className="rounded-md bg-[var(--surface-strong)] px-2 py-1 text-xs font-semibold text-slate-600">{phaseName}</span>
             <span className="rounded-md bg-[var(--surface-strong)] px-2 py-1 text-xs font-semibold text-slate-600">{item.type}</span>
             <span className="text-xs text-[var(--muted)]">{item.author}</span>
+            {item.createdAt && <span className="text-xs text-[var(--muted)]">{item.createdAt.slice(0, 10)}</span>}
           </div>
           <h4 className="mt-3 font-bold">{item.title}</h4>
           <p className="mt-2 whitespace-pre-wrap text-sm leading-6 text-[var(--muted)]">{item.body}</p>
@@ -1731,7 +2620,9 @@ function LearningItemCard({ item, onLike, canLike }: { item: LearningItem; onLik
           <ThumbsUp size={15} />
           {item.likes}/{item.threshold}
         </button>
+        {item.isExcellent && <span className="rounded-lg bg-[#fff4d8] px-3 py-2 text-sm font-semibold text-[#92620f]">优秀池</span>}
         {item.inKnowledgeBase && <span className="rounded-lg bg-teal-50 px-3 py-2 text-sm font-semibold text-teal-700">已入库</span>}
+        {item.reviewSource && <span className="rounded-lg border border-[var(--line)] px-3 py-2 text-xs text-slate-500">审核：{item.reviewSource}</span>}
       </div>
     </article>
   );
@@ -1744,10 +2635,14 @@ function CoCreationPanel({
   onSubmitIdeas,
   onRun,
   onVote,
+  onUpdateTopic,
   canSubmitIdeas,
   canRun,
   canVote,
   currentVoter,
+  currentGroup,
+  selectedGroup,
+  onSelectGroup,
   role
 }: {
   coCreation: CoCreationState;
@@ -1756,13 +2651,27 @@ function CoCreationPanel({
   onSubmitIdeas: () => void;
   onRun: () => void;
   onVote: (idea: string) => void;
+  onUpdateTopic: (topic: string) => void;
   canSubmitIdeas: boolean;
   canRun: boolean;
   canVote: boolean;
   currentVoter: string;
+  currentGroup: string;
+  selectedGroup: string;
+  onSelectGroup: (group: string) => void;
   role: (typeof roleProfiles)[number];
 }) {
   const blueprint = submissionBlueprints["co-creation"];
+  const [topicDraft, setTopicDraft] = useState(coCreation.topic);
+  const groupLocked = role.id === "student";
+  const activeSubmitAllowed = canSubmitIdeas && !coCreation.converged;
+  const activeRunAllowed = canRun && !coCreation.converged && coCreation.ideas.length > 0;
+  const activeVoteAllowed = canVote && !coCreation.converged;
+  const displayGroup = groupLocked ? currentGroup : selectedGroup;
+
+  useEffect(() => {
+    setTopicDraft(coCreation.topic);
+  }, [coCreation.topic]);
 
   return (
     <div className="grid grid-cols-[0.9fr_1.1fr] gap-5 max-xl:grid-cols-1">
@@ -1771,13 +2680,41 @@ function CoCreationPanel({
         <h2 className="mt-2 text-2xl font-bold">{role.id === "student" ? "提交我的共创观点" : "群体智慧凝聚工作流"}</h2>
         <p className="mt-3 text-sm leading-6 text-[var(--muted)]">
           {role.id === "student"
-            ? "你可以补充本轮观点，系统会去重并加入分类汇总。收敛、投票统计和报告生成由班主任或管理员执行。"
-            : "自动收集观点、语义去重、动态分类、投票统计，并在新增观点少于等于 3 条或达到 3 轮时生成《共识报告》。"}
+            ? "你可以提交当前主题下的有效观点；小组来自账号配置，不能自行修改。收敛后等待老师开启新主题。"
+            : "每个主题只做一次收敛。收敛后系统按主题归档有效观点，隐藏无效观点，并要求老师或管理员开启新的共创主题。"}
         </p>
         <div className="mt-5 grid grid-cols-3 gap-3">
-          <Metric label="轮次" value={`${coCreation.round}/${coCreation.maxRounds}`} />
-          <Metric label="观点" value={String(coCreation.ideas.length)} />
-          <Metric label="状态" value={coCreation.converged ? "已收敛" : "收集中"} />
+          <Metric label="有效观点" value={String(coCreation.ideas.length)} />
+          <Metric label="已隐藏" value={String(coCreation.hiddenIdeas?.length || 0)} />
+          <Metric label="状态" value={coCreation.converged ? "待新主题" : "收集中"} />
+        </div>
+        {coCreation.converged && (
+          <div className="mt-5 rounded-lg border border-[#eed38e] bg-[#fff8e8] px-4 py-3 text-sm font-semibold text-[#92620f]">
+            当前主题已收敛并归档。请由老师或管理员更新一个新的共创主题后再继续提交观点。
+          </div>
+        )}
+
+        <div className="mt-5 rounded-lg border border-[#eed38e] bg-[#fff8e8] p-4">
+          <div className="flex items-end gap-3 max-md:block">
+            <label className="flex-1 text-sm font-semibold">
+              当前共创主题
+              <input
+                value={topicDraft}
+                onChange={(event) => setTopicDraft(event.target.value)}
+                disabled={!canRun}
+                className="mt-2 w-full rounded-lg border border-[#eed38e] bg-white px-3 py-2 font-normal outline-none focus:border-[#b7791f] disabled:bg-slate-50"
+              />
+            </label>
+            <button
+              onClick={() => onUpdateTopic(topicDraft)}
+              disabled={!canRun || topicDraft.trim() === coCreation.topic}
+              className={`rounded-lg px-4 py-2.5 text-sm font-semibold max-md:mt-3 ${
+                canRun && topicDraft.trim() !== coCreation.topic ? "bg-[#b7791f] text-white" : "bg-slate-100 text-slate-400"
+              }`}
+            >
+              更新主题
+            </button>
+          </div>
         </div>
 
         <div className="mt-5 rounded-lg border border-[#eed38e] bg-[#fff8e8] p-4">
@@ -1793,12 +2730,29 @@ function CoCreationPanel({
         </div>
 
         <label className="mt-5 block text-sm font-semibold">
+          所属小组
+          <select
+            value={displayGroup}
+            onChange={(event) => onSelectGroup(event.target.value)}
+            disabled={groupLocked}
+            className="mt-2 w-full rounded-lg border border-[var(--line)] bg-white px-3 py-2 font-normal outline-none focus:border-[#b7791f] disabled:bg-slate-50 disabled:text-slate-500"
+          >
+            {coCreation.groups.map((group) => (
+              <option key={group} value={group}>
+                {group}
+              </option>
+            ))}
+            <option value="全班">全班</option>
+          </select>
+        </label>
+
+        <label className="mt-5 block text-sm font-semibold">
           {blueprint.bodyLabel}，每行一条
           <textarea
             value={ideaDraft}
             onChange={(event) => setIdeaDraft(event.target.value)}
             rows={7}
-            disabled={!canSubmitIdeas}
+            disabled={!activeSubmitAllowed}
             placeholder={blueprint.bodyPlaceholder}
             className="mt-2 w-full resize-none rounded-lg border border-[var(--line)] px-3 py-2 font-normal leading-6 outline-none focus:border-[#b7791f] disabled:bg-slate-50 disabled:text-slate-400"
           />
@@ -1812,23 +2766,23 @@ function CoCreationPanel({
         </div>
         <button
           onClick={onSubmitIdeas}
-          disabled={!canSubmitIdeas}
+          disabled={!activeSubmitAllowed}
           className={`mt-4 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold ${
-            canSubmitIdeas ? "border border-[#eed38e] bg-[#fff8e8] text-[#92620f]" : "bg-slate-100 text-slate-400"
+            activeSubmitAllowed ? "border border-[#eed38e] bg-[#fff8e8] text-[#92620f]" : "bg-slate-100 text-slate-400"
           }`}
         >
-          {canSubmitIdeas ? <Send size={16} /> : <Lock size={16} />}
-          {canSubmitIdeas ? blueprint.submitLabel : "当前角色不能提交观点"}
+          {activeSubmitAllowed ? <Send size={16} /> : <Lock size={16} />}
+          {activeSubmitAllowed ? blueprint.submitLabel : coCreation.converged ? "等待新主题" : "当前角色不能提交观点"}
         </button>
         <button
           onClick={onRun}
-          disabled={!canRun}
+          disabled={!activeRunAllowed}
           className={`mt-3 flex w-full items-center justify-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold ${
-            canRun ? "bg-[#b7791f] text-white" : "bg-slate-100 text-slate-400"
+            activeRunAllowed ? "bg-[#b7791f] text-white" : "bg-slate-100 text-slate-400"
           }`}
         >
-          {canRun ? <Layers3 size={16} /> : <Lock size={16} />}
-          {canRun ? "运行下一轮并判断收敛" : "当前角色不能运行共创"}
+          {activeRunAllowed ? <Layers3 size={16} /> : <Lock size={16} />}
+          {activeRunAllowed ? "收敛当前主题并归档" : coCreation.converged ? "已收敛，请开启新主题" : "当前角色不能运行共创"}
         </button>
       </section>
 
@@ -1848,6 +2802,23 @@ function CoCreationPanel({
                 </div>
               </div>
             ))}
+            {!Object.keys(coCreation.categories).length && (
+              <div className="rounded-lg border border-dashed border-[var(--line)] p-6 text-center text-sm text-[var(--muted)]">当前主题暂无有效观点。</div>
+            )}
+          </div>
+        </div>
+
+        <div className="rounded-lg border border-[var(--line)] bg-white p-5">
+          <div className="mb-4 flex items-center gap-2">
+            <Users size={18} className="text-[#b7791f]" />
+            <h3 className="font-bold">分组贡献</h3>
+          </div>
+          <div className="grid grid-cols-3 gap-3 max-md:grid-cols-1">
+            {coCreation.groups.map((group) => {
+              const count = Object.values(coCreation.ideaGroups || {}).filter((value) => value === group).length;
+              const votes = Object.values(coCreation.groupVotes || {}).reduce((sum, groupMap) => sum + (groupMap[group] || 0), 0);
+              return <Metric key={group} label={group} value={`${count} 条 / ${votes} 票`} />;
+            })}
           </div>
         </div>
 
@@ -1863,7 +2834,7 @@ function CoCreationPanel({
                 const hasVoted = Boolean(
                   currentVoter && (coCreation.voters?.[idea] || []).includes(currentVoter)
                 );
-                const disabled = !canVote || hasVoted;
+                const disabled = !activeVoteAllowed || hasVoted;
                 return (
                   <div key={idea} className="grid grid-cols-[1fr_auto_auto] items-center gap-3 rounded-lg border border-[var(--line)] px-3 py-2 text-sm">
                     <span className="leading-6">{idea}</span>
@@ -1877,7 +2848,7 @@ function CoCreationPanel({
                           : "border border-[#eed38e] bg-[#fff8e8] text-[#92620f] hover:bg-[#fff3d6]"
                       }`}
                     >
-                      {hasVoted ? "已投" : canVote ? "投一票" : "不可投"}
+                      {hasVoted ? "已投" : activeVoteAllowed ? "投一票" : "不可投"}
                     </button>
                   </div>
                 );
@@ -1892,6 +2863,27 @@ function CoCreationPanel({
               <h3 className="font-bold">《共识报告》</h3>
             </div>
             <pre className="whitespace-pre-wrap font-sans text-sm leading-7 text-slate-700">{coCreation.report}</pre>
+          </div>
+        )}
+
+        {!!coCreation.archives?.length && (
+          <div className="rounded-lg border border-[var(--line)] bg-white p-5">
+            <h3 className="font-bold">已归档主题</h3>
+            <div className="mt-4 space-y-3">
+              {coCreation.archives.slice(0, 5).map((archive) => (
+                <div key={archive.id} className="rounded-lg border border-[var(--line)] p-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="font-semibold">{archive.topic}</p>
+                    <span className="rounded-md bg-[#fff8e8] px-2 py-1 text-xs font-semibold text-[#92620f]">{archive.ideas.length} 条有效观点</span>
+                  </div>
+                  <div className="mt-3 space-y-1">
+                    {archive.ideas.slice(0, 3).map((idea) => (
+                      <p key={idea} className="text-sm leading-6 text-[var(--muted)]">{idea}</p>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </section>
@@ -1989,7 +2981,8 @@ function TransformationPanel({
   plansByStudent,
   studentOptions,
   selectedPlanStudent,
-  onSelectPlanStudent
+  onSelectPlanStudent,
+  onConfirmPlan
 }: {
   plan: PersonalPlan | null;
   draft: { title: string; body: string };
@@ -2009,6 +3002,7 @@ function TransformationPanel({
   studentOptions: string[];
   selectedPlanStudent: string;
   onSelectPlanStudent: (student: string) => void;
+  onConfirmPlan: (studentName?: string) => void;
 }) {
   const blueprint = submissionBlueprints.transformation;
   const delivery = deliveryByPhase.transformation;
@@ -2059,7 +3053,11 @@ function TransformationPanel({
       </aside>
 
       <section className="space-y-4">
-        {plan ? <PlanCard plan={plan} /> : <EmptyPlan onCreatePlan={onCreatePlan} canGeneratePlan={canGeneratePlan} />}
+        {plan ? (
+          <PlanCard plan={plan} onConfirm={() => onConfirmPlan(plan.student)} canConfirm={role.id === "student" && plan.status === "待确认"} />
+        ) : (
+          <EmptyPlan onCreatePlan={onCreatePlan} canGeneratePlan={canGeneratePlan} />
+        )}
 
         <div className="rounded-lg border border-[var(--line)] bg-white p-5">
           <div className="mb-4 flex items-start justify-between gap-3 max-md:block">
@@ -2144,17 +3142,36 @@ function TransformationPanel({
   );
 }
 
-function KnowledgePanel({ knowledgeBase, role }: { knowledgeBase: KnowledgeEntry[]; role: (typeof roleProfiles)[number] }) {
+function KnowledgePanel({
+  knowledgeBase,
+  role,
+  onUpdate,
+  onDelete
+}: {
+  knowledgeBase: KnowledgeEntry[];
+  role: (typeof roleProfiles)[number];
+  onUpdate: (id: string, patch: Partial<KnowledgeEntry>) => void;
+  onDelete: (id: string) => void;
+}) {
   const [filter, setFilter] = useState<PhaseId | "all">("all");
-  const filtered = filter === "all" ? knowledgeBase : knowledgeBase.filter((entry) => entry.phase === filter);
+  const [editingId, setEditingId] = useState("");
+  const [editDraft, setEditDraft] = useState({ title: "", summary: "", tags: "" });
+  const visibleKnowledge = role.id === "admin" ? knowledgeBase : knowledgeBase.filter((entry) => entry.status !== "hidden");
+  const filtered = filter === "all" ? visibleKnowledge : visibleKnowledge.filter((entry) => entry.phase === filter);
   const tabs: Array<{ id: PhaseId | "all"; label: string; count: number }> = [
-    { id: "all", label: "总知识库", count: knowledgeBase.length },
+    { id: "all", label: "总知识库", count: visibleKnowledge.length },
     ...coachModules.map((module) => ({
       id: module.id,
       label: `${module.title}知识库`,
-      count: knowledgeBase.filter((entry) => entry.phase === module.id).length
+      count: visibleKnowledge.filter((entry) => entry.phase === module.id).length
     }))
   ];
+  const canManage = role.id === "admin";
+
+  function startEdit(entry: KnowledgeEntry) {
+    setEditingId(entry.id);
+    setEditDraft({ title: entry.title, summary: entry.summary, tags: entry.tags.join("、") });
+  }
 
   return (
     <section className="rounded-lg border border-[var(--line)] bg-white">
@@ -2192,36 +3209,82 @@ function KnowledgePanel({ knowledgeBase, role }: { knowledgeBase: KnowledgeEntry
               <th className="px-5 py-3">来源</th>
               <th className="px-5 py-3">标签</th>
               <th className="px-5 py-3">日期</th>
+              {canManage && <th className="px-5 py-3">管理</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-[var(--line)]">
             {filtered.map((entry) => {
               const phaseName = coachModules.find((module) => module.id === entry.phase)?.title || entry.phase;
+              const editing = editingId === entry.id;
               return (
                 <tr key={entry.id}>
                   <td className="px-5 py-4">
-                    <p className="font-semibold">{entry.title}</p>
-                    <p className="mt-1 max-w-lg text-[var(--muted)]">{entry.summary}</p>
+                    {editing ? (
+                      <div className="space-y-2">
+                        <input value={editDraft.title} onChange={(event) => setEditDraft({ ...editDraft, title: event.target.value })} className="w-full rounded-lg border border-[var(--line)] px-3 py-2 font-normal" />
+                        <textarea value={editDraft.summary} onChange={(event) => setEditDraft({ ...editDraft, summary: event.target.value })} rows={3} className="w-full resize-none rounded-lg border border-[var(--line)] px-3 py-2 font-normal" />
+                      </div>
+                    ) : (
+                      <>
+                        <p className="font-semibold">{entry.title}</p>
+                        <p className="mt-1 max-w-lg text-[var(--muted)]">{entry.summary}</p>
+                      </>
+                    )}
                   </td>
                   <td className="px-5 py-4">{phaseName}</td>
                   <td className="px-5 py-4">{entry.type}</td>
                   <td className="px-5 py-4">{entry.source}</td>
                   <td className="px-5 py-4">
-                    <div className="flex flex-wrap gap-1">
-                      {entry.tags.map((tag) => (
-                        <span key={tag} className="rounded-md bg-[var(--surface-strong)] px-2 py-1 text-xs">
-                          {tag}
-                        </span>
-                      ))}
-                    </div>
+                    {editing ? (
+                      <input value={editDraft.tags} onChange={(event) => setEditDraft({ ...editDraft, tags: event.target.value })} className="w-full rounded-lg border border-[var(--line)] px-3 py-2 font-normal" />
+                    ) : (
+                      <div className="flex flex-wrap gap-1">
+                        {entry.tags.map((tag) => (
+                          <span key={tag} className="rounded-md bg-[var(--surface-strong)] px-2 py-1 text-xs">
+                            {tag}
+                          </span>
+                        ))}
+                        {entry.status === "hidden" && <span className="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-500">已隐藏</span>}
+                      </div>
+                    )}
                   </td>
                   <td className="px-5 py-4">{entry.createdAt}</td>
+                  {canManage && (
+                    <td className="px-5 py-4">
+                      {editing ? (
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            onClick={() => {
+                              onUpdate(entry.id, {
+                                title: editDraft.title,
+                                summary: editDraft.summary,
+                                tags: editDraft.tags.split(/[、,，]/).map((tag) => tag.trim()).filter(Boolean)
+                              });
+                              setEditingId("");
+                            }}
+                            className="rounded-md bg-[var(--teal)] px-2 py-1 text-xs font-semibold text-white"
+                          >
+                            保存
+                          </button>
+                          <button onClick={() => setEditingId("")} className="rounded-md border border-[var(--line)] px-2 py-1 text-xs font-semibold">取消</button>
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap gap-2">
+                          <button onClick={() => startEdit(entry)} className="rounded-md border border-[var(--line)] px-2 py-1 text-xs font-semibold">编辑</button>
+                          <button onClick={() => onUpdate(entry.id, { status: entry.status === "hidden" ? "active" : "hidden" })} className="rounded-md border border-[var(--line)] px-2 py-1 text-xs font-semibold">
+                            {entry.status === "hidden" ? "恢复" : "隐藏"}
+                          </button>
+                          <button onClick={() => onDelete(entry.id)} className="rounded-md border border-[#f2c5bf] px-2 py-1 text-xs font-semibold text-[#bd5145]">删除</button>
+                        </div>
+                      )}
+                    </td>
+                  )}
                 </tr>
               );
             })}
             {!filtered.length && (
               <tr>
-                <td colSpan={6} className="px-5 py-10 text-center text-sm text-[var(--muted)]">该分库暂无条目，请先完成相应环节的提交与点赞达标。</td>
+                <td colSpan={canManage ? 7 : 6} className="px-5 py-10 text-center text-sm text-[var(--muted)]">该分库暂无条目，请先完成相应环节的提交与点赞达标。</td>
               </tr>
             )}
           </tbody>
@@ -2231,8 +3294,18 @@ function KnowledgePanel({ knowledgeBase, role }: { knowledgeBase: KnowledgeEntry
   );
 }
 
-function ModelSettingsPanel({ config, onSave }: { config: ModelConfig; onSave: (config: ModelConfig) => void }) {
+function ModelSettingsPanel({
+  config,
+  onSave,
+  onTest
+}: {
+  config: ModelConfig;
+  onSave: (config: ModelConfig) => void;
+  onTest: (config: ModelConfig) => Promise<string>;
+}) {
   const [draft, setDraft] = useState<ModelConfig>(config);
+  const [testStatus, setTestStatus] = useState("");
+  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     setDraft(config);
@@ -2348,12 +3421,31 @@ function ModelSettingsPanel({ config, onSave }: { config: ModelConfig; onSave: (
             保存配置
           </button>
           <button
+            onClick={async () => {
+              setTesting(true);
+              setTestStatus("");
+              try {
+                setTestStatus(await onTest(draft));
+              } catch (error) {
+                setTestStatus(error instanceof Error ? error.message : "模型连接失败。");
+              } finally {
+                setTesting(false);
+              }
+            }}
+            disabled={testing}
+            className="flex items-center gap-2 rounded-lg border border-[var(--line)] px-4 py-2.5 text-sm font-semibold max-md:mt-3 max-md:w-full max-md:justify-center"
+          >
+            <FlaskConical size={16} />
+            {testing ? "测试中" : "测试连接"}
+          </button>
+          <button
             onClick={() => onSave({ ...draft, enabled: false })}
             className="rounded-lg border border-[var(--line)] px-4 py-2.5 text-sm font-semibold max-md:mt-3 max-md:w-full"
           >
             关闭自定义模型
           </button>
         </div>
+        {testStatus && <p className="mt-4 rounded-lg border border-[var(--line)] bg-[var(--surface-strong)] px-3 py-2 text-sm text-slate-700">{testStatus}</p>}
       </section>
     </div>
   );
@@ -2367,7 +3459,7 @@ function RoleCard({ role, account }: { role: (typeof roleProfiles)[number]; acco
         <p className="text-sm font-bold">账号权限</p>
       </div>
       <p className="mt-2 text-sm font-semibold">{account.name} · {role.name}</p>
-      <p className="mt-1 text-xs leading-5 text-[var(--muted)]">{account.title}，账号：{account.username}</p>
+      <p className="mt-1 text-xs leading-5 text-[var(--muted)]">{account.title}，账号：{account.username}，小组：{account.groupName || "全班"}</p>
       <div className="mt-3 flex flex-wrap gap-1">
         {role.allowed.slice(0, 5).map((permission) => (
           <span key={permission} className="rounded-md bg-[var(--surface-strong)] px-2 py-1 text-xs text-slate-600">
@@ -2413,7 +3505,8 @@ function PermissionMatrix({ role }: { role: (typeof roleProfiles)[number] }) {
   );
 }
 
-function PlanCard({ plan }: { plan: PersonalPlan }) {
+function PlanCard({ plan, onConfirm, canConfirm = false }: { plan: PersonalPlan; onConfirm?: () => void; canConfirm?: boolean }) {
+  const dueCheckpoints = getDueCheckpoints(plan);
   return (
     <div className="rounded-lg border border-[var(--line)] bg-white p-5">
       <div className="flex items-start justify-between gap-4">
@@ -2421,8 +3514,21 @@ function PlanCard({ plan }: { plan: PersonalPlan }) {
           <p className="text-sm font-semibold text-[#a43f5a]">{plan.student} · 我的方案</p>
           <h3 className="mt-2 text-xl font-bold">《个人行动计划》</h3>
         </div>
-        <span className="rounded-lg bg-[#fde9ef] px-3 py-1.5 text-sm font-semibold text-[#a43f5a]">已生成</span>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <span className="rounded-lg bg-[#fde9ef] px-3 py-1.5 text-sm font-semibold text-[#a43f5a]">{plan.status}</span>
+          {canConfirm && (
+            <button onClick={onConfirm} className="flex items-center gap-2 rounded-lg bg-[#b94a66] px-3 py-1.5 text-sm font-semibold text-white">
+              <CheckCircle2 size={15} />
+              确认方案
+            </button>
+          )}
+        </div>
       </div>
+      {!!dueCheckpoints.length && (
+        <div className="mt-4 rounded-lg border border-[#f2bdcd] bg-[#fde9ef] px-3 py-2 text-sm font-semibold text-[#a43f5a]">
+          {dueCheckpoints.map((checkpoint) => `${checkpoint.day} ${checkpoint.label}`).join("、")} 已到期，请提交转化成果。
+        </div>
+      )}
       <p className="mt-4 text-sm leading-7 text-slate-700">{plan.recommendation}</p>
       <div className="mt-5 grid grid-cols-2 gap-4 max-md:grid-cols-1">
         <div className="rounded-lg border border-[var(--line)] p-4">
@@ -2449,8 +3555,10 @@ function PlanCard({ plan }: { plan: PersonalPlan }) {
             ))}
           </div>
           {plan.generatedAt && <p className="mt-2 text-xs text-[var(--muted)]">方案生成时间：{plan.generatedAt}</p>}
+          {plan.confirmedAt && <p className="mt-1 text-xs text-[var(--muted)]">学员确认时间：{plan.confirmedAt}</p>}
           <p className="mt-4 text-sm font-semibold">引用案例</p>
           <p className="mt-2 text-sm leading-6 text-[var(--muted)]">{plan.citedCases.join("、") || "等待更多知识库素材"}</p>
+          {!!plan.sourceNotes?.length && <p className="mt-2 text-xs leading-5 text-[var(--muted)]">来源：{plan.sourceNotes.join("；")}</p>}
         </div>
       </div>
     </div>
@@ -2504,6 +3612,42 @@ function PermissionButton({
       {allowed ? children : <><Lock size={16} /> 无生成权限</>}
     </button>
   );
+}
+
+function getRatio(part: number, total: number) {
+  if (!total) return 0;
+  return Math.max(0, Math.min(1, part / total));
+}
+
+function getPercentNumber(part: number, total: number) {
+  return Math.round(getRatio(part, total) * 100);
+}
+
+function formatPercent(part: number, total: number) {
+  return `${getPercentNumber(part, total)}%`;
+}
+
+function getDateValue(value?: string) {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function isDueDate(value?: string) {
+  const time = getDateValue(value);
+  if (!time) return false;
+  return time <= Date.now();
+}
+
+function formatShortDate(value?: string) {
+  if (!value) return "未记录";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.getMonth() + 1}/${date.getDate()}`;
+}
+
+function getPhaseTitle(phase: PhaseId) {
+  return coachModules.find((module) => module.id === phase)?.title || phase;
 }
 
 function Metric({ label, value }: { label: string; value: string }) {

@@ -16,9 +16,12 @@ export async function reviewWithMiniMax(input: {
   const runtime = resolveRuntimeConfig(input.modelConfig);
   const apiKey = runtime.apiKey;
   if (!apiKey) return null;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
 
   const response = await fetch(`${runtime.baseUrl.replace(/\/$/, "")}/chat/completions`, {
     method: "POST",
+    signal: controller.signal,
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json"
@@ -39,7 +42,7 @@ export async function reviewWithMiniMax(input: {
       temperature: 0.2,
       max_tokens: 220
     })
-  });
+  }).finally(() => clearTimeout(timeout));
 
   if (!response.ok) {
     throw new Error(`${runtime.providerName} request failed: ${response.status}`);
@@ -73,6 +76,17 @@ function resolveRuntimeConfig(config?: ModelConfig | null) {
     };
   }
 
+  const apiKey = process.env.MINIMAX_API_KEY || process.env.WUHUA_MODEL_API_KEY || "";
+  if (apiKey) {
+    return {
+      apiKey,
+      baseUrl: process.env.MINIMAX_BASE_URL || process.env.WUHUA_MODEL_BASE_URL || "https://api.minimax.io/v1",
+      model: process.env.MINIMAX_MODEL || process.env.WUHUA_MODEL_NAME || "MiniMax-M2.7",
+      providerName: "MiniMax",
+      source: "minimax" as const
+    };
+  }
+
   return {
     apiKey: "",
     baseUrl: "",
@@ -84,15 +98,35 @@ function resolveRuntimeConfig(config?: ModelConfig | null) {
 
 function parseJsonObject(value: string): Record<string, unknown> | null {
   const cleaned = value.replace(/```json|```/g, "").trim();
-  const match = cleaned.match(/\{[\s\S]*\}/);
-  try {
-    return JSON.parse(match ? match[0] : cleaned);
-  } catch {
-    return null;
+  const candidates = [cleaned, ...extractJsonObjectCandidates(cleaned)];
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try the next possible object.
+    }
   }
+  return null;
 }
 
 function normalizeQuality(value: unknown): LearningItem["quality"] {
   if (value === "优秀" || value === "合规" || value === "待补充") return value;
   return "合规";
+}
+
+function extractJsonObjectCandidates(value: string) {
+  const candidates: string[] = [];
+  for (let start = value.indexOf("{"); start >= 0; start = value.indexOf("{", start + 1)) {
+    let depth = 0;
+    for (let index = start; index < value.length; index += 1) {
+      const char = value[index];
+      if (char === "{") depth += 1;
+      if (char === "}") depth -= 1;
+      if (depth === 0) {
+        candidates.push(value.slice(start, index + 1));
+        break;
+      }
+    }
+  }
+  return candidates;
 }

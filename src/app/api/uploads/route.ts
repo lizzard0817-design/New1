@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "fs/promises";
 import path from "path";
 import { NextResponse } from "next/server";
+import { apiError, requirePermission } from "@/lib/api-utils";
 
 const dataRoot = process.env.WUHUA_DATA_DIR || path.join(process.cwd(), ".wuhuan-data");
 const uploadRoot = path.join(dataRoot, "uploads");
@@ -14,19 +15,24 @@ const extensionByMime: Record<string, string> = {
 };
 
 export async function POST(request: Request) {
-  const formData = await request.formData();
+  const auth = requirePermission(request, "submitLearningContent");
+  if ("response" in auth) return auth.response;
+  const formData = await request.formData().catch(() => null);
+  if (!formData) {
+    return apiError("上传请求格式无效。", 400, "VALIDATION_ERROR");
+  }
   const file = formData.get("file");
 
   if (!(file instanceof File)) {
-    return NextResponse.json({ error: "未收到图片文件。" }, { status: 400 });
+    return apiError("未收到图片文件。", 400, "VALIDATION_ERROR");
   }
 
   if (!file.type.startsWith("image/") || !extensionByMime[file.type]) {
-    return NextResponse.json({ error: "仅支持 jpg、png、webp、gif 图片。" }, { status: 415 });
+    return apiError("仅支持 jpg、png、webp、gif 图片。", 415, "UNSUPPORTED_MEDIA_TYPE");
   }
 
   if (file.size > maxImageSize) {
-    return NextResponse.json({ error: "图片不能超过 5MB。" }, { status: 413 });
+    return apiError("图片不能超过 5MB。", 413, "PAYLOAD_TOO_LARGE");
   }
 
   await mkdir(uploadRoot, { recursive: true });

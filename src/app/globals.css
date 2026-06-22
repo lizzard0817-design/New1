@@ -1,22 +1,31 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f7f8f6;
-  --foreground: #1f2933;
-  --muted: #6b7280;
-  --line: #dce2df;
-  --surface: #ffffff;
-  --surface-strong: #f0f4f2;
-  --teal: #0f766e;
-  --teal-soft: #dff3ef;
-  --coral: #e05d4f;
-  --coral-soft: #fde8e4;
-  --amber: #b7791f;
-  --amber-soft: #fff3d6;
-  --violet: #6d5bd0;
-  --violet-soft: #eeeafd;
-  --rose: #b94a66;
-  --rose-soft: #fde7ee;
+  --bg: #f5f5f7;
+  --bg-card: #ffffff;
+  --text: #1d1d1f;
+  --text-secondary: #86868b;
+  --border: rgba(0, 0, 0, 0.06);
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --danger: #ff3b30;
+
+  --background: var(--bg);
+  --foreground: var(--text);
+  --muted: var(--text-secondary);
+  --line: var(--border);
+  --surface: var(--bg-card);
+  --surface-strong: #f5f5f7;
+  --teal: var(--accent);
+  --teal-soft: #f0f5ff;
+  --coral: var(--danger);
+  --coral-soft: #fff0ee;
+  --amber: var(--accent);
+  --amber-soft: #f0f5ff;
+  --violet: var(--accent);
+  --violet-soft: #f0f5ff;
+  --rose: var(--accent);
+  --rose-soft: #f0f5ff;
 }
 
 * {
@@ -25,10 +34,12 @@
 
 body {
   margin: 0;
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, "Microsoft YaHei", "PingFang SC", sans-serif;
-  letter-spacing: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
 }
 
 button,
@@ -42,6 +53,13 @@ button {
   cursor: pointer;
 }
 
+input:focus,
+textarea:focus,
+select:focus {
+  outline: none;
+}
+
 ::selection {
-  background: rgba(15, 118, 110, 0.18);
+  background: rgba(0, 113, 227, 0.18);
+  color: var(--text);
 }
